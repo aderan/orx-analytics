@@ -56,12 +56,15 @@ def make_zcode_db(path: Path, project_a: str, project_b: str) -> dict:
     other = "sess_other-project-0001"
     sessions = [
         (ctrl, None, project_a, "proj_a", "controller", ts(0), ts(600)),
+        # subagent sessions are created moments BEFORE the worker claims
+        # (measured 4-11 s on six R006 host workers): w1 precedes attempt
+        # 201's span T(10)..T(19), w2 precedes attempt 202's T(20)..T(28)
         (w1, ctrl, project_a, "proj_a",
          "You are the ORX worker for assignment T001, attempt 201. W…",
-         ts(60), ts(200)),
+         ts(9), ts(200)),
         (w2, ctrl, project_a, "proj_a",
          "You are the ORX worker for assignment T002 (revision 3), "
-         "attempt 202. W…", ts(70), ts(220)),
+         "attempt 202. W…", ts(19), ts(220)),
         (other, None, project_b, "proj_b", "unrelated work", ts(50), ts(90)),
     ]
     conn.executemany("INSERT INTO session VALUES (?,?,?,?,?,?,?)", sessions)

@@ -185,6 +185,11 @@ CREATE TABLE IF NOT EXISTS orx_replan_superseded(
   disposition TEXT, successors_json TEXT, note TEXT,
   PRIMARY KEY(snapshot_id, id)
 );
+CREATE TABLE IF NOT EXISTS orx_attempt_progress(
+  snapshot_id INTEGER NOT NULL, id INTEGER NOT NULL, attempt_id INTEGER,
+  sequence INTEGER, phase TEXT, message TEXT, received_at TEXT,
+  PRIMARY KEY(snapshot_id, id)
+);
 -- correlation ----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS links(
   project_key TEXT NOT NULL, attempt_id INTEGER NOT NULL,

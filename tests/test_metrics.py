@@ -81,10 +81,112 @@ def test_correlation_stored_and_inferred_with_basis(loaded):
     assert l201.session_id == loaded["zcode"]["w1"]
     assert "attempt" in l201.basis and "marker" in l201.basis
     assert l201.evidence["matched_text"] == "attempt 201"
+    # the high verdict now records the window cross-check it survived
+    assert "slack" in l201.basis
+    assert l201.evidence["session_created_ms"] is not None
+    assert l201.evidence["window_ms"] is not None
     l202 = by_att[202]
     assert l202.session_id == loaded["zcode"]["w2"]
     # 203 is a cursor/cli attempt with no ref: honestly unlinked
     assert 203 not in by_att
+
+
+def _iso(ms: int) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat()
+
+
+def test_stale_marker_outside_window_downgrades(loaded):
+    # the R006 shape: a rev-2 subagent whose prompt still carries rev-1
+    # evidence lineage ("attempt NNN") — marker hits, wrong era
+    from conftest import ts
+    store = loaded["store"]
+    snap = correlate.latest_snapshot(store, loaded["proj_a"])
+    store.conn.execute(
+        "INSERT INTO orx_attempts(snapshot_id, id, revision_id, task_id, "
+        "role, driver, harness, session_ref, started_at, ended_at, result, "
+        "run_id) VALUES (?,?,11,'T001','worker','host','zcode',NULL,?,?,"
+        "NULL,'R001')",
+        (snap, 205, _iso(ts(100)), _iso(ts(110))))
+    store.conn.execute(
+        "INSERT INTO zc_sessions VALUES ('sess_stale',?,?,NULL,'stale copy',"
+        "?,?)",
+        (loaded["zcode"]["controller"], loaded["proj_a"], ts(500), ts(560)))
+    store.conn.execute(
+        "INSERT INTO zc_first_parts VALUES ('sess_stale', "
+        "'worker continuing attempt 205 (stale rev-1 lineage)')")
+    store.conn.commit()
+    correlate.correlate(store, loaded["proj_a"])
+    links = {x.attempt_id: x for x in correlate.links_for_snapshot(
+        store, loaded["proj_a"], snap)}
+    l = links[205]
+    assert l.authority == "inferred" and l.confidence == "ambiguous"
+    assert l.session_id == "sess_stale"
+    assert "outside the attempt span" in l.basis
+    # the numbers that failed the check are part of the evidence
+    assert l.evidence["session_created_ms"] == ts(500)
+    assert l.evidence["window_ms"][1] is not None
+    assert l.evidence["session_created_ms"] > l.evidence["window_ms"][1]
+
+
+def test_verifier_prompt_marker_does_not_link_worker_attempt(loaded):
+    # the R006 a108 shape: a VERIFIER session's prompt cites the worker
+    # attempt id it verifies, and its creation time fits the worker's span —
+    # only the prompt's role declaration separates them
+    from conftest import ts
+    store = loaded["store"]
+    snap = correlate.latest_snapshot(store, loaded["proj_a"])
+    store.conn.execute(
+        "INSERT INTO orx_attempts(snapshot_id, id, revision_id, task_id, "
+        "role, driver, harness, session_ref, started_at, ended_at, result, "
+        "run_id) VALUES (?,?,11,'T001','worker','host','zcode',NULL,?,?,"
+        "NULL,'R001')",
+        (snap, 207, _iso(ts(100)), _iso(ts(110))))
+    store.conn.execute(
+        "INSERT INTO zc_sessions VALUES ('sess_verifier',?,?,NULL,"
+        "'verifier',?,?)",
+        (loaded["zcode"]["controller"], loaded["proj_a"], ts(105), ts(120)))
+    store.conn.execute(
+        "INSERT INTO zc_first_parts VALUES ('sess_verifier', "
+        "'You are an ORX verifier for Goal G001: verify the evidence of "
+        "attempt 207 (source attempt 207, evidence row 58)')")
+    store.conn.commit()
+    correlate.correlate(store, loaded["proj_a"])
+    links = {x.attempt_id: x for x in correlate.links_for_snapshot(
+        store, loaded["proj_a"], snap)}
+    l = links[207]
+    assert l.authority == "inferred" and l.confidence == "ambiguous"
+    assert l.session_id == "sess_verifier"
+    assert "role" in l.basis
+    assert l.evidence["window_reason"].startswith("prompt declares")
+
+
+def test_marker_hit_without_attempt_span_stays_ambiguous(loaded):
+    # unclaimed (zombie) attempts carry no span: a marker hit can never be
+    # cross-checked, so it cannot reach high
+    from conftest import ts
+    store = loaded["store"]
+    snap = correlate.latest_snapshot(store, loaded["proj_a"])
+    store.conn.execute(
+        "INSERT INTO orx_attempts(snapshot_id, id, revision_id, task_id, "
+        "role, driver, harness, session_ref, started_at, ended_at, result, "
+        "run_id) VALUES (?,?,11,'T003','worker','host','zcode',NULL,NULL,"
+        "NULL,NULL,'R001')",
+        (snap, 206))
+    store.conn.execute(
+        "INSERT INTO zc_sessions VALUES ('sess_nospan',?,?,NULL,'nospan',"
+        "?,?)",
+        (loaded["zcode"]["controller"], loaded["proj_a"], ts(30), ts(40)))
+    store.conn.execute(
+        "INSERT INTO zc_first_parts VALUES ('sess_nospan', "
+        "'parked worker for attempt 206')")
+    store.conn.commit()
+    correlate.correlate(store, loaded["proj_a"])
+    links = {x.attempt_id: x for x in correlate.links_for_snapshot(
+        store, loaded["proj_a"], snap)}
+    l = links[206]
+    assert l.authority == "inferred" and l.confidence == "ambiguous"
+    assert "span missing" in l.basis
 
 
 def test_ambiguous_marker_downgrades(loaded):

@@ -1,9 +1,10 @@
 """ORX per-project state.db importer.
 
 Follows docs/observability-contract.md of the ORX repo: schema gate accepts
-exactly {8, 9}; named columns only; read-only in place. Each collect appends
-one snapshot per project; snapshots are append-only, so a run's numbers are
-recomputed from any snapshot again later.
+exactly {8, 9, 10} (single source: probe.SUPPORTED_ORX_SCHEMA); named columns
+only; read-only in place. Each collect appends one snapshot per project;
+snapshots are append-only, so a run's numbers are recomputed from any
+snapshot again later.
 """
 
 from __future__ import annotations
@@ -11,10 +12,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..dbutil import open_ro
-from ..probe import probe_orx
+from ..probe import SUPPORTED_ORX_SCHEMA, probe_orx
 from ..store import Store, now_iso
 
-SUPPORTED = {"8", "9"}
+# kept as an alias: probe and importer share one gate definition
+SUPPORTED = SUPPORTED_ORX_SCHEMA
 
 _TABLES: list[tuple[str, str, list[str]]] = [
     # (mirror table, source table, columns) — named columns only, never *
@@ -51,7 +53,7 @@ _TABLES: list[tuple[str, str, list[str]]] = [
 ]
 
 _V9_TABLES: list[tuple[str, str, list[str]]] = [
-    # replan correspondence exists only on schema v9 files
+    # replan correspondence exists on v9+ files (v10 keeps every v9 table)
     ("orx_replan_maps", "replan_mappings",
      ["id", "run_id", "revision_id", "prior_revision"]),
     ("orx_replan_task_maps", "replan_task_mappings",
@@ -65,13 +67,20 @@ _V9_TABLES: list[tuple[str, str, list[str]]] = [
       "disposition", "successors_json", "note"]),
 ]
 
+_V10_TABLES: list[tuple[str, str, list[str]]] = [
+    # append-only host heartbeat progress, added by the v10 amendment
+    ("orx_attempt_progress", "attempt_progress",
+     ["id", "attempt_id", "sequence", "phase", "message", "received_at"]),
+]
+
 _SOURCE_TO_MIRROR_COL = {
     "cached_input_tokens": "cached_input",
 }
 
 
 def import_orx_project(store: Store, project_key: str) -> dict:
-    """Append one snapshot of the project's ORX state. Refuses non-{8,9}."""
+    """Append one snapshot of the project's ORX state. Refuses unsupported
+    schema versions via the shared gate in probe.SUPPORTED_ORX_SCHEMA."""
     db = Path(project_key) / ".orx" / "state.db"
     pr = probe_orx(Path(project_key))
     if not pr.ok:
@@ -89,8 +98,10 @@ def import_orx_project(store: Store, project_key: str) -> dict:
                 (project_key, now_iso(), pr.fields["schema_version"], str(db)))
             snapshot_id = cur.lastrowid
             tables = list(_TABLES)
-            if pr.fields["schema_version"] == "9":
+            if pr.fields["schema_version"] in ("9", "10"):
                 tables += _V9_TABLES
+            if pr.fields["schema_version"] == "10":
+                tables += _V10_TABLES
             for mirror, src, cols in tables:
                 select_cols = ", ".join(cols)
                 n = 0

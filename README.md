@@ -91,9 +91,9 @@ orx-analytics bundle session sess_xxxx --dest mysessbundle ...
 | 症状 | 处理 |
 |---|---|
 | `probe` 报 GAP | 按输出补齐（如 Cursor bubbleData 为空是本机事实，报告会标注） |
-| collect 报 `schema gate refuses` | ORX 库版本不是 8/9；先升级 ORX 再采集，绝不代为迁移 |
+| collect 报 `schema gate refuses` | ORX 库版本不在 {8,9,10}；先升级 ORX 再采集，绝不代为迁移 |
 | watch `last_error` 非 null | 读 `provenance` 看哪个源；单源失败不阻塞其他源 |
-| 关联 `ambiguous` | 多个会话命中同一 attempt 标记；查看 links.evidence 候选，人工裁决 |
+| 关联 `ambiguous` | 多个会话命中同一 attempt 标记，或标记命中但会话创建时间在 attempt 跨度 ± 300s 之外（过期标记/证据血缘），或提示词角色声明与 attempt 角色不符（verifier 引用 worker 编号）；查看 links.evidence 候选与窗口数字，人工裁决 |
 | 想重算历史 | 每轮 ORX 快照 append-only：`report` 永远用最新快照，旧快照数据仍在库中 |
 
 ## 仓库布局

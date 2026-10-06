@@ -89,6 +89,36 @@ def test_orx_v8_file_imports_without_replan(world):
     assert "orx_replan_maps" not in r["counts"]
 
 
+def test_orx_v10_file_imports_with_replan_and_progress(world):
+    # the ==9 trap: v10 keeps every v9 replan table and adds attempt_progress
+    v10 = world["tmp"] / "v10proj"
+    (v10 / ".orx").mkdir(parents=True)
+    from conftest import make_orx_db
+    make_orx_db(v10 / ".orx" / "state.db")
+    conn = sqlite3.connect(v10 / ".orx" / "state.db")
+    conn.execute("UPDATE meta SET value='10'")
+    conn.execute(
+        "CREATE TABLE attempt_progress (id INTEGER PRIMARY KEY "
+        "AUTOINCREMENT, attempt_id INTEGER NOT NULL, sequence INTEGER "
+        "NOT NULL, phase TEXT NOT NULL, message TEXT, received_at TEXT "
+        "NOT NULL, UNIQUE(attempt_id, sequence))")
+    conn.execute(
+        "INSERT INTO attempt_progress(attempt_id, sequence, phase, message, "
+        "received_at) VALUES (201, 1, 'build', 'running suite', "
+        "'2026-10-04T12:00:05+00:00')")
+    conn.commit()
+    conn.close()
+    r = import_orx_project(world["store"], str(v10))
+    assert "error" not in r, r
+    assert r["counts"]["orx_replan_sources"] == 1   # not silently dropped
+    assert r["counts"]["orx_attempt_progress"] == 1
+    row = world["store"].conn.execute(
+        "SELECT phase, received_at FROM orx_attempt_progress "
+        "WHERE snapshot_id=?", (r["snapshot_id"],)).fetchone()
+    assert row["phase"] == "build"
+    assert row["received_at"] == "2026-10-04T12:00:05+00:00"
+
+
 def test_codex_import_incremental_and_torn_tail(world):
     r1 = import_codex(world["store"], world["codex_dir"])
     assert r1["counts"]["threads"] == 1

@@ -26,6 +26,11 @@ CURSOR_GLOBAL = (
     / "globalStorage" / "state.vscdb"
 )
 
+# The ORX observability contract gate (ORX repo docs/observability-contract.md):
+# accept exactly these schema versions, refuse everything else. orxstate.py
+# imports this constant so the probe and the importer can never disagree.
+SUPPORTED_ORX_SCHEMA = {"8", "9", "10"}
+
 ZCODE_TABLE_FIELDS: dict[str, list[str]] = {
     "session": ["id", "parent_id", "directory", "project_id", "title",
                 "time_created", "time_updated"],
@@ -202,9 +207,10 @@ def probe_orx(project_root: Path) -> ProbeResult:
             return ProbeResult("orx", False, "no schema_version row",
                                gaps=["schema gate: refuse (missing version)"])
         sv = row[0]
-        ok = sv in ("8", "9")
-        gaps = [] if ok else [f"schema gate refuses version {sv} "
-                              "(supported: 8, 9)"]
+        ok = sv in SUPPORTED_ORX_SCHEMA
+        gaps = [] if ok else [
+            f"schema gate refuses version {sv} (supported: "
+            + ", ".join(sorted(SUPPORTED_ORX_SCHEMA, key=int)) + ")"]
         try:
             runs = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
         except sqlite3.Error:

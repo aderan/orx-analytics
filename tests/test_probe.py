@@ -81,3 +81,27 @@ def test_probe_orx_gate(tmp_path):
     conn.close()
     r = probe.probe_orx(root)
     assert not r.ok  # gate refuses 7 exactly like the contract
+
+
+def test_probe_orx_gate_accepts_v10(tmp_path):
+    root = tmp_path / "proj"
+    (root / ".orx").mkdir(parents=True)
+    conn = sqlite3.connect(root / ".orx" / "state.db")
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT, value TEXT);"
+        "CREATE TABLE runs (id TEXT);"
+        "INSERT INTO meta VALUES ('schema_version','10');"
+        "INSERT INTO runs VALUES ('R001');")
+    conn.commit()
+    conn.close()
+    r = probe.probe_orx(root)
+    assert r.ok and r.fields["schema_version"] == "10"
+    conn = sqlite3.connect(root / ".orx" / "state.db")
+    conn.execute("UPDATE meta SET value='11' WHERE key='schema_version'")
+    conn.commit()
+    conn.close()
+    # versions beyond the contract are still refused: widen only when the
+    # ORX contract amendment lands
+    r = probe.probe_orx(root)
+    assert not r.ok
+    assert any("11" in g for g in r.gaps)

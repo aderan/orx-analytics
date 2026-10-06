@@ -5,7 +5,10 @@ Two authorities only (docs/correlation.md):
 - ``inferred``: recomputed from recorded evidence (the attempt's unique
   marker inside a subagent's first prompt part, plus the session's project
   directory). Always carries basis + evidence + confidence, and is
-  recomputed (never accumulated) on every correlate pass.
+  recomputed (never accumulated) on every correlate pass. High additionally
+  requires the session's creation time to fall inside the attempt span ±
+  ``WINDOW_SLACK_MS`` — time is only ever a veto against stale markers,
+  never join evidence on its own.
 
 Nothing here joins by title similarity, time proximity, or short task ids.
 """
@@ -21,6 +24,38 @@ from typing import Any
 from .store import Store, now_iso
 
 _MARKER = re.compile(r"\battempt (\d+)\b")
+
+# High-confidence marker matches must also survive a creation-time window:
+# the subagent session is created moments BEFORE the worker claims (measured
+# 4-11 s on six R006 host workers), never long after the attempt closed. A
+# marker hit outside the attempt span ± this slack is a stale copy (e.g. a
+# rev-1 evidence lineage pasted into a rev-2 dispatch) and is downgraded to
+# ambiguous rather than linked.
+WINDOW_SLACK_MS = 300_000
+
+# A dispatch prompt self-declares its role in its opening line ("You are an
+# ORX worker/verifier for Goal ..."). When the declaration survives in the
+# first part, it vetoes marker matches against attempts of the other role —
+# R006 evidence: a verifier session's prompt cites the worker attempt id it
+# verifies ("attempt 107" evidence lineage) and its creation time fits the
+# worker's span, so only the role text separates them. No declaration means
+# no veto (best-effort until ORX embeds per-attempt nonces).
+_ROLE_DECLARATIONS = (
+    ("ORX verifier", "verifier"),
+    ("ORX worker", "worker"),
+)
+
+
+def _role_mismatch(attempt_role: str, first_part: str | None) -> str | None:
+    """Reason string when the prompt's role declaration contradicts the
+    attempt's role; None when consistent or undeclared."""
+    if not first_part:
+        return None
+    for phrase, role in _ROLE_DECLARATIONS:
+        if phrase in first_part and attempt_role != role:
+            return (f"prompt declares '{phrase}' but attempt role is "
+                    f"'{attempt_role}'")
+    return None
 
 
 @dataclass
@@ -65,6 +100,35 @@ def _marker_index(store: Store, project_key: str,
     return idx
 
 
+def _window_check(a: Any, session: dict) -> dict:
+    """Creation-time cross-check for a unique marker hit (docs/correlation.md
+    high tier). Returns ok + the numbers behind the verdict; a missing
+    attempt span or session creation time can never be `ok`."""
+    started, ended = a["started_at"], a["ended_at"]
+    created = session["created_ms"]
+    if not started or not ended:
+        return {"ok": False,
+                "reason": "attempt span missing; creation time cannot be "
+                          "cross-checked",
+                "attempt_span": [started, ended],
+                "session_created_ms": created}
+    if created is None:
+        return {"ok": False,
+                "reason": "session creation time unknown",
+                "attempt_span": [started, ended],
+                "session_created_ms": None}
+    lo = _epoch_ms(started) - WINDOW_SLACK_MS
+    hi = _epoch_ms(ended) + WINDOW_SLACK_MS
+    ok = lo <= created <= hi
+    return {"ok": ok,
+            "reason": None if ok else
+            "session created outside the attempt span ± slack "
+            f"({WINDOW_SLACK_MS // 1000}s); stale marker or wrong lineage",
+            "attempt_span": [started, ended],
+            "session_created_ms": created,
+            "window_ms": [lo, hi]}
+
+
 def correlate(store: Store, project_key: str,
               allow_medium: bool = False) -> dict:
     """(Re)compute links for the project's latest ORX snapshot."""
@@ -74,8 +138,8 @@ def correlate(store: Store, project_key: str,
     sessions = zcode_session_ids(store)
     markers = _marker_index(store, project_key, sessions)
     attempts = store.conn.execute(
-        "SELECT id, role, harness, session_ref, driver FROM orx_attempts "
-        "WHERE snapshot_id=?", (snap,)).fetchall()
+        "SELECT id, role, harness, session_ref, driver, started_at, ended_at "
+        "FROM orx_attempts WHERE snapshot_id=?", (snap,)).fetchall()
 
     # stored links first; inferred rows are recomputed from scratch
     store.conn.execute(
@@ -121,20 +185,43 @@ def correlate(store: Store, project_key: str,
         if len(cands) == 1:
             sid = next(iter(cands))
             snippet = _MARKER.search(sessions[sid]["first_part_text"])
-            store.conn.execute(
-                "INSERT INTO links(project_key, attempt_id, harness, "
-                "session_id, authority, basis, evidence_json, confidence, "
-                "computed_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (project_key, a["id"], "zcode", sid, "inferred",
-                 "subagent first prompt contains the attempt's unique "
-                 "marker 'attempt <id>'; session.directory equals the "
-                 "project root; session has a parent (subagent structure)",
-                 json.dumps({
-                     "matched_text": snippet.group(0) if snippet else None,
-                     "session_directory": sessions[sid]["directory"],
-                     "session_created_ms": sessions[sid]["created_ms"]}),
-                 "high", now_iso()))
-            counts["inferred_high"] += 1
+            w = _window_check(a, sessions[sid])
+            role_reason = _role_mismatch(
+                a["role"], sessions[sid]["first_part_text"])
+            evidence = {
+                "matched_text": snippet.group(0) if snippet else None,
+                "session_directory": sessions[sid]["directory"],
+                "session_created_ms": sessions[sid]["created_ms"],
+                "attempt_span": w["attempt_span"],
+                "window_ms": w.get("window_ms"),
+                "slack_ms": WINDOW_SLACK_MS}
+            if w["ok"] and role_reason is None:
+                store.conn.execute(
+                    "INSERT INTO links(project_key, attempt_id, harness, "
+                    "session_id, authority, basis, evidence_json, "
+                    "confidence, computed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (project_key, a["id"], "zcode", sid, "inferred",
+                     "subagent first prompt contains the attempt's unique "
+                     "marker 'attempt <id>'; session.directory equals the "
+                     "project root; session has a parent (subagent "
+                     "structure); session created within the attempt span "
+                     f"± {WINDOW_SLACK_MS // 1000}s slack; prompt role "
+                     "declaration consistent",
+                     json.dumps(evidence), "high", now_iso()))
+                counts["inferred_high"] += 1
+            else:
+                reason = role_reason or w["reason"]
+                store.conn.execute(
+                    "INSERT INTO links(project_key, attempt_id, harness, "
+                    "session_id, authority, basis, evidence_json, "
+                    "confidence, computed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (project_key, a["id"], "zcode", sid, "inferred",
+                     "marker matched exactly one subagent session, but "
+                     + reason + "; refusing high",
+                     json.dumps({**evidence,
+                                 "window_reason": reason}),
+                     "ambiguous", now_iso()))
+                counts["ambiguous"] += 1
         elif len(cands) > 1:
             store.conn.execute(
                 "INSERT INTO links(project_key, attempt_id, harness, "
