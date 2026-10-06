@@ -18,7 +18,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-STORE_VERSION = "1"
+STORE_VERSION = "2"
+
+
+def _migrate_store(conn: sqlite3.Connection, from_version: str) -> None:
+    """In-place additive upgrades of the analytics store itself. v1 -> v2:
+    orx_attempts gains the ORX v11 `nonce` column (identity anchors)."""
+    if from_version == "1":
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(orx_attempts)")}
+        if cols and "nonce" not in cols:
+            conn.execute("ALTER TABLE orx_attempts ADD COLUMN nonce TEXT")
+        conn.execute(
+            "UPDATE meta SET value=? WHERE key='store_version'", (STORE_VERSION,))
+        conn.commit()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -136,6 +148,7 @@ CREATE TABLE IF NOT EXISTS orx_attempts(
   fallback_used INTEGER, started_at TEXT, ended_at TEXT, result TEXT,
   failure_reason TEXT, session_ref TEXT, run_id TEXT,
   usage_missing_reason TEXT, actual_model TEXT, model_source TEXT,
+  nonce TEXT,
   PRIMARY KEY(snapshot_id, id)
 );
 CREATE TABLE IF NOT EXISTS orx_verifications(
@@ -226,6 +239,10 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# store versions this code can upgrade in place; anything else refuses
+_MIGRATABLE_FROM = {"1"}
+
+
 class Store:
     def __init__(self, data_dir: Path | None = None):
         import os
@@ -246,7 +263,11 @@ class Store:
             self.conn.execute(
                 "INSERT INTO meta VALUES ('store_version', ?)", (STORE_VERSION,))
             self.conn.commit()
-        elif row["value"] != STORE_VERSION:
+        elif row["value"] == STORE_VERSION:
+            pass
+        elif row["value"] in _MIGRATABLE_FROM:
+            _migrate_store(self.conn, row["value"])
+        else:
             raise RuntimeError(
                 f"analytics.db store_version {row['value']} != {STORE_VERSION}; "
                 "this reader cannot open it")

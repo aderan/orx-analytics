@@ -45,8 +45,8 @@
 
 ## ORX — `<project>/.orx/state.db`
 
-- 契约 `docs/observability-contract.md`（gate 收 {8,9,10}，第四修正案后
-  工具同步于 2026-10-06）；本机 ORX 项目 schema v10（R006 起）。
+- 契约 `docs/observability-contract.md`（gate 收 {8,9,10,11}，第四/五修正案后
+  工具同步于 2026-10-06）；本机 ORX 项目 schema v11（G007 起；R006 及更早库按其创建版本只读）。
 - R003 复核：10 worker attempt `session_ref` 全 NULL；planner attempt 85 有
   codex thread id。
 - 已知缺陷（待修）：README.md 两处仍写 "schema v7"（gate 实收 {8,9,10}）。

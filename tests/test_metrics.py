@@ -161,6 +161,70 @@ def test_verifier_prompt_marker_does_not_link_worker_attempt(loaded):
     assert l.evidence["window_reason"].startswith("prompt declares")
 
 
+def test_nonce_anchor_links_without_window_or_role_checks(loaded):
+    """The v11 identity anchor: a one-time token hit is high even when the
+    marker rules could never certify it — creation time far outside the
+    attempt span, and the prompt even carries another attempt's stale
+    lineage text. A uuid exists in exactly one dispatch prompt."""
+    from conftest import ts
+    store = loaded["store"]
+    snap = correlate.latest_snapshot(store, loaded["proj_a"])
+    nonce = "orx-assignment:5f6e7a8b-9c0d-4e1f-8a2b-3c4d5e6f7081"
+    store.conn.execute(
+        "INSERT INTO orx_attempts(snapshot_id, id, revision_id, task_id, "
+        "role, driver, harness, session_ref, started_at, ended_at, result, "
+        "run_id, nonce) VALUES (?,?,11,'T001','worker','host','zcode',NULL,"
+        "?,?,NULL,'R001',?)",
+        (snap, 208, _iso(ts(100)), _iso(ts(110)), nonce))
+    # created LONG after the attempt closed; prompt also cites stale lineage
+    store.conn.execute(
+        "INSERT INTO zc_sessions VALUES ('sess_nonce',?,?,NULL,'nonce era',"
+        "?,?)",
+        (loaded["zcode"]["controller"], loaded["proj_a"], ts(500), ts(560)))
+    store.conn.execute(
+        "INSERT INTO zc_first_parts VALUES ('sess_nonce', "
+        "'ORX_ASSIGNMENT=" + nonce + " worker continuing attempt 199 "
+        "(stale rev-1 lineage)')")
+    store.conn.commit()
+    correlate.correlate(store, loaded["proj_a"])
+    links = {x.attempt_id: x for x in correlate.links_for_snapshot(
+        store, loaded["proj_a"], snap)}
+    l = links[208]
+    assert l.authority == "inferred" and l.confidence == "high"
+    assert l.session_id == "sess_nonce"
+    assert "one-time ORX_ASSIGNMENT token" in l.basis
+    assert l.evidence["nonce"] == nonce
+    assert l.evidence["matched_text"] == "ORX_ASSIGNMENT=" + nonce
+
+
+def test_nonce_double_dispatch_is_ambiguous(loaded):
+    from conftest import ts
+    store = loaded["store"]
+    snap = correlate.latest_snapshot(store, loaded["proj_a"])
+    nonce = "orx-assignment:11223344-5566-4777-8899-aabbccddeeff"
+    store.conn.execute(
+        "INSERT INTO orx_attempts(snapshot_id, id, revision_id, task_id, "
+        "role, driver, harness, session_ref, started_at, ended_at, result, "
+        "run_id, nonce) VALUES (?,?,11,'T002','worker','host','zcode',NULL,"
+        "?,?,NULL,'R001',?)",
+        (snap, 209, _iso(ts(100)), _iso(ts(110)), nonce))
+    for i, sid in enumerate(("sess_nd1", "sess_nd2")):
+        store.conn.execute(
+            "INSERT INTO zc_sessions VALUES (?,?,?,NULL,'dup',?,?)",
+            (sid, loaded["zcode"]["controller"], loaded["proj_a"],
+             ts(101 + i), ts(120)))
+        store.conn.execute(
+            "INSERT INTO zc_first_parts VALUES (?, 'ORX_ASSIGNMENT=" + nonce + "')",
+            (sid,))
+    store.conn.commit()
+    correlate.correlate(store, loaded["proj_a"])
+    links = {x.attempt_id: x for x in correlate.links_for_snapshot(
+        store, loaded["proj_a"], snap)}
+    l = links[209]
+    assert l.confidence == "ambiguous"
+    assert "double" in l.basis
+
+
 def test_marker_hit_without_attempt_span_stays_ambiguous(loaded):
     # unclaimed (zombie) attempts carry no span: a marker hit can never be
     # cross-checked, so it cannot reach high

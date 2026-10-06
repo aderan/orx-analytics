@@ -15,7 +15,8 @@ worker 传递；CLI 路径由适配器从工具输出捕获）。这是唯一可
 
 | 置信度 | 依据（全部满足才给该级） |
 |---|---|
-| high | 子会话首条用户 part 含该 attempt 的唯一标记（如 "attempt 88"）且 `session.directory` == 项目根 且父会话链在项目内（controller→subagent 结构成立）且**会话创建时间落在 attempt 跨度 ± 300s 松弛内**且提示词角色声明与 attempt 角色一致（修订 2026-10-06，见下） |
+| high (nonce) | 子会话首条用户 part 携带该 attempt 的一次性身份锚 `ORX_ASSIGNMENT=orx-assignment:<uuid>`（ORX v11 派发提示词首部、attempt 创建时铸造）且 `session.directory` == 项目根 且父会话链在项目内。token 一次一个 attempt、不可猜测、不会出现在别的提示词的证据血缘里——命中即无需时间窗/角色交叉校验；同一 token 出现在多个会话 = 同一提示词真实双发，降 ambiguous |
+| high (marker) | 子会话首条用户 part 含该 attempt 的唯一标记（如 "attempt 88"）且 `session.directory` == 项目根 且父会话链在项目内（controller→subagent 结构成立）且**会话创建时间落在 attempt 跨度 ± 300s 松弛内**且提示词角色声明与 attempt 角色一致（修订 2026-10-06，见下）。仅适用于无 nonce 的 legacy attempt |
 | medium | `session.directory` == 项目根 且会话时间窗覆盖 attempt 跨度（±松弛）且角色/标题语义与 attempt 一致，但无 attempt 唯一标记 |
 | low | 仅时间邻近或仅标题相似——**默认不落库**，仅供人工线索输出 |
 
@@ -30,6 +31,11 @@ worker 传递；CLI 路径由适配器从工具输出捕获）。这是唯一可
 
 ## 修订（2026-10-06，R006 复盘）
 
+- **新增 nonce 身份锚档（high (nonce)）**：ORX v11 起派发提示词首部携带
+  `ORX_ASSIGNMENT=orx-assignment:<uuid4>`（attempt 行 `nonce` 列同值）。
+  token 命中直接 high——一次一 attempt、uuid 不可猜测，过期标记/证据血缘
+  误链在 token 路径上结构性不存在。有 nonce 的 attempt 不再走 marker 路
+  径（ORX 侧 discovery 同规则）。同一 token 多会话 = 提示词双发，ambiguous。
 - **high 增加角色文本否决**：派发提示词首行自我声明角色（"You are an
   ORX worker/verifier…"）。声明存留时，与其他角色 attempt 的标记命中降为
   ambiguous。依据：R006 的 a108 验证会话提示词引用其核验的 worker attempt

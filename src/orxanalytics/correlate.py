@@ -25,6 +25,14 @@ from .store import Store, now_iso
 
 _MARKER = re.compile(r"\battempt (\d+)\b")
 
+# ORX v11 dispatch prompts open with "ORX_ASSIGNMENT=orx-assignment:<uuid4>"
+# — a one-time token minted per attempt. A token hit is exact and
+# unguessable: it cannot be paraphrased away and cannot appear in another
+# prompt's evidence lineage, so it needs no window or role cross-check.
+_NONCE = re.compile(
+    r"ORX_ASSIGNMENT=(orx-assignment:"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
+
 # High-confidence marker matches must also survive a creation-time window:
 # the subagent session is created moments BEFORE the worker claims (measured
 # 4-11 s on six R006 host workers), never long after the attempt closed. A
@@ -86,6 +94,21 @@ def zcode_session_ids(store: Store) -> dict[str, dict]:
     return {r["session_id"]: dict(r) for r in rows}
 
 
+def _nonce_index(store: Store, project_key: str,
+                 sessions: dict[str, dict]) -> dict[str, set[str]]:
+    """nonce token -> sessions whose first prompt carries it inside this
+    project. A token belongs to exactly one attempt, so two sessions on one
+    token is a genuine double-dispatch, not a lineage artifact."""
+    idx: dict[str, set[str]] = {}
+    for sid, s in sessions.items():
+        if s["directory"] != project_key or not s["first_part_text"]:
+            continue
+        m = _NONCE.search(s["first_part_text"])
+        if m:
+            idx.setdefault(m.group(1), set()).add(sid)
+    return idx
+
+
 def _marker_index(store: Store, project_key: str,
                   sessions: dict[str, dict]) -> dict[int, set[str]]:
     """attempt id -> sessions whose first prompt names that attempt and
@@ -137,9 +160,10 @@ def correlate(store: Store, project_key: str,
         return {"project": project_key, "error": "no ORX snapshot"}
     sessions = zcode_session_ids(store)
     markers = _marker_index(store, project_key, sessions)
+    nonces = _nonce_index(store, project_key, sessions)
     attempts = store.conn.execute(
-        "SELECT id, role, harness, session_ref, driver, started_at, ended_at "
-        "FROM orx_attempts WHERE snapshot_id=?", (snap,)).fetchall()
+        "SELECT id, role, harness, session_ref, driver, started_at, ended_at, "
+        "nonce FROM orx_attempts WHERE snapshot_id=?", (snap,)).fetchall()
 
     # stored links first; inferred rows are recomputed from scratch
     store.conn.execute(
@@ -177,6 +201,49 @@ def correlate(store: Store, project_key: str,
             continue
         if a["harness"] != "zcode" or a["driver"] != "host":
             counts["none"] += 1
+            continue
+        if a["nonce"]:
+            # v11 identity anchor: the token is one-time and per-attempt, so
+            # a hit needs no window/role cross-check (it cannot be stale
+            # lineage — a uuid exists in exactly one dispatch prompt).
+            cands = {c for c in nonces.get(a["nonce"], set())
+                     if sessions[c]["parent_id"]}
+            if len(cands) == 1:
+                sid = next(iter(cands))
+                snippet = _NONCE.search(sessions[sid]["first_part_text"])
+                store.conn.execute(
+                    "INSERT INTO links(project_key, attempt_id, harness, "
+                    "session_id, authority, basis, evidence_json, "
+                    "confidence, computed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (project_key, a["id"], "zcode", sid, "inferred",
+                     "subagent first prompt carries this attempt's one-time "
+                     "ORX_ASSIGNMENT token (ORX v11 identity anchor; minted "
+                     "at dispatch, unique to this attempt); session.directory "
+                     "equals the project root; session has a parent "
+                     "(subagent structure)",
+                     json.dumps({
+                         "matched_text": snippet.group(0) if snippet else None,
+                         "nonce": a["nonce"],
+                         "session_directory": sessions[sid]["directory"],
+                         "session_created_ms": sessions[sid]["created_ms"]}),
+                     "high", now_iso()))
+                counts["inferred_high"] += 1
+            elif len(cands) > 1:
+                store.conn.execute(
+                    "INSERT INTO links(project_key, attempt_id, harness, "
+                    "session_id, authority, basis, evidence_json, "
+                    "confidence, computed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (project_key, a["id"], "zcode", ",".join(sorted(cands)),
+                     "inferred",
+                     "the attempt's one-time ORX_ASSIGNMENT token appears in "
+                     "more than one subagent session (genuine double "
+                     "dispatch of the same prompt)",
+                     json.dumps({"nonce": a["nonce"],
+                                 "candidates": sorted(cands)}),
+                     "ambiguous", now_iso()))
+                counts["ambiguous"] += 1
+            else:
+                counts["none"] += 1
             continue
         cands = markers.get(a["id"], set())
         # subagent structure required: a marker in a root session's prompt

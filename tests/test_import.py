@@ -119,6 +119,78 @@ def test_orx_v10_file_imports_with_replan_and_progress(world):
     assert row["received_at"] == "2026-10-04T12:00:05+00:00"
 
 
+def test_orx_v11_file_imports_nonce_column(world):
+    # v11 keeps every v9/v10 table and adds attempts.nonce (identity anchor)
+    v11 = world["tmp"] / "v11proj"
+    (v11 / ".orx").mkdir(parents=True)
+    from conftest import make_orx_db
+    make_orx_db(v11 / ".orx" / "state.db")
+    conn = sqlite3.connect(v11 / ".orx" / "state.db")
+    conn.execute("UPDATE meta SET value='11'")
+    conn.execute(
+        "CREATE TABLE attempt_progress (id INTEGER PRIMARY KEY "
+        "AUTOINCREMENT, attempt_id INTEGER NOT NULL, sequence INTEGER "
+        "NOT NULL, phase TEXT NOT NULL, message TEXT, received_at TEXT "
+        "NOT NULL, UNIQUE(attempt_id, sequence))")
+    conn.execute(
+        "ALTER TABLE attempts ADD COLUMN nonce TEXT")
+    conn.execute(
+        "UPDATE attempts SET nonce='orx-assignment:9c1d0a34-1e2f-4a3b-8c5d-"
+        "000000000201' WHERE id=201")
+    conn.commit()
+    conn.close()
+    r = import_orx_project(world["store"], str(v11))
+    assert "error" not in r, r
+    assert r["counts"]["orx_replan_sources"] == 1
+    assert r["counts"]["orx_attempt_progress"] == 0   # table present, empty
+    rows = {row["id"]: row for row in world["store"].conn.execute(
+        "SELECT id, nonce FROM orx_attempts WHERE snapshot_id=?",
+        (r["snapshot_id"],))}
+    assert rows[201]["nonce"] == "orx-assignment:9c1d0a34-1e2f-4a3b-8c5d-000000000201"
+    assert rows[202]["nonce"] is None
+
+
+def test_store_v1_upgrades_to_v2_adding_nonce_column(tmp_path):
+    """An existing analytics.db (store v1, orx_attempts without nonce) opens,
+    upgrades in place, and keeps its rows; a foreign future version still
+    refuses."""
+    import pytest
+    from orxanalytics.store import Store
+    old = Store(tmp_path / "home1")
+    old.conn.execute(
+        "INSERT INTO orx_snapshots(project_key, taken_at, schema_version, "
+        "source_path) VALUES ('p','2026-10-06T00:00:00+00:00','11','x')")
+    old.conn.commit()
+    old.close()
+    # degrade it to a v1 store: drop the nonce column, reset the version
+    conn = sqlite3.connect(tmp_path / "home1" / "analytics.db")
+    conn.execute("ALTER TABLE orx_attempts DROP COLUMN nonce")
+    conn.execute("UPDATE meta SET value='1' WHERE key='store_version'")
+    conn.commit()
+    conn.close()
+
+    store = Store(tmp_path / "home1")
+    try:
+        cols = {r["name"] for r in store.conn.execute(
+            "PRAGMA table_info(orx_attempts)")}
+        assert "nonce" in cols
+        version = store.conn.execute(
+            "SELECT value FROM meta WHERE key='store_version'").fetchone()[0]
+        assert version == "2"
+        kept = store.conn.execute(
+            "SELECT COUNT(*) FROM orx_snapshots").fetchone()[0]
+        assert kept == 1
+    finally:
+        store.close()
+    # a version this code cannot upgrade refuses
+    conn = sqlite3.connect(tmp_path / "home1" / "analytics.db")
+    conn.execute("UPDATE meta SET value='9' WHERE key='store_version'")
+    conn.commit()
+    conn.close()
+    with pytest.raises(RuntimeError, match="store_version 9"):
+        Store(tmp_path / "home1")
+
+
 def test_codex_import_incremental_and_torn_tail(world):
     r1 = import_codex(world["store"], world["codex_dir"])
     assert r1["counts"]["threads"] == 1

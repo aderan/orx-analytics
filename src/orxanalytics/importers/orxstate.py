@@ -73,6 +73,11 @@ _V10_TABLES: list[tuple[str, str, list[str]]] = [
      ["id", "attempt_id", "sequence", "phase", "message", "received_at"]),
 ]
 
+# v11 adds the one-time identity nonce column on attempts; the core column
+# list stays version-free, so the importer rebinds the attempts entry with
+# the extra column for v11 files only (v8-v10 files have no such column).
+_ATTEMPT_NONCE_EXTRA = ["nonce"]
+
 _SOURCE_TO_MIRROR_COL = {
     "cached_input_tokens": "cached_input",
 }
@@ -102,6 +107,13 @@ def import_orx_project(store: Store, project_key: str) -> dict:
                 tables += _V9_TABLES
             if pr.fields["schema_version"] == "10":
                 tables += _V10_TABLES
+            if pr.fields["schema_version"] == "11":
+                tables += _V9_TABLES + _V10_TABLES
+                tables = [
+                    (mirror, src, cols + _ATTEMPT_NONCE_EXTRA)
+                    if src == "attempts" else (mirror, src, cols)
+                    for mirror, src, cols in tables
+                ]
             for mirror, src, cols in tables:
                 select_cols = ", ".join(cols)
                 n = 0
