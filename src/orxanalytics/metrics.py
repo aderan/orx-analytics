@@ -292,6 +292,7 @@ def session_side(store: Store, snap: int, run_id: str,
     windows = correlate.attribute_session_windows(store, project_key, snap)
     out: list[dict[str, Any]] = []
     seen_trees: set[str] = set()
+    union_sessions: set[str] = set()
     for l in links:
         att = store.conn.execute(
             "SELECT role, harness, task_id FROM orx_attempts "
@@ -323,13 +324,29 @@ def session_side(store: Store, snap: int, run_id: str,
             seen_trees.add(l.session_id)
             entry["tree_totals"] = correlate.zcode_tree_totals(
                 store, l.session_id)
+        # union caliber: every session of every linked tree, once
+        union_sessions.update(correlate.zcode_tree(store, l.session_id))
         out.append(entry)
+    union = {"sessions": len(union_sessions)}
+    if union_sessions:
+        q = ",".join("?" * len(union_sessions))
+        r = store.conn.execute(
+            f"SELECT SUM(input_tokens) i, SUM(output_tokens) o FROM "
+            f"zc_turns WHERE session_id IN ({q})", sorted(union_sessions)
+        ).fetchone()
+        union["input_tokens"] = r["i"]
+        union["output_tokens"] = r["o"]
+    else:
+        union["input_tokens"] = None
+        union["output_tokens"] = None
     return {
         "linked": out,
+        "union_totals": union,
         "note": ("session trees are the native-tool caliber and are "
                  "reported beside ORX observations, never merged into "
                  "them; unsplit multi-attempt sessions carry their totals "
-                 "with an explicit refusal reason"),
+                 "with an explicit refusal reason; union_totals sums every "
+                 "session of every linked tree exactly once"),
     }
 
 

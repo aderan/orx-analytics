@@ -55,15 +55,20 @@ def _rows(store: Store, sql: str, args: tuple = ()) -> list[dict]:
 def _collect_run_data(store: Store, project_key: str, snap: int,
                       run_id: str, links: list[dict]) -> dict[str, list]:
     atts = metrics.attempts_for_run(store, snap, run_id)
+    run_att = {a["id"] for a in atts}
+    links = [l for l in links if l["attempt_id"] in run_att]
     att_ids = [a["id"] for a in atts]
     qmarks = ",".join("?" * len(att_ids)) if att_ids else "NULL"
     revs = _rows(store, "SELECT * FROM orx_revisions WHERE snapshot_id=? "
                         "AND run_id=?", (snap, run_id))
     rev_ids = [r["id"] for r in revs]
     rq = ",".join("?" * len(rev_ids)) if rev_ids else "NULL"
-    session_ids = sorted({l["session_id"] for l in links
-                          if l.get("harness") == "zcode"
-                          and l.get("confidence") != "ambiguous"})
+    direct = {l["session_id"] for l in links
+              if l.get("harness") == "zcode"
+              and l.get("confidence") != "ambiguous"}
+    session_ids = sorted(
+        set().union(*(correlate.zcode_tree(store, s) for s in direct))
+        if direct else set())
     sq = ",".join("?" * len(session_ids)) if session_ids else "NULL"
     return {
         "runs.json": _rows(store, "SELECT * FROM orx_runs WHERE "
@@ -233,15 +238,10 @@ def _headline_from_report(rep: dict) -> dict:
         }
     head["first_pass_rate"] = {
         "numerator": fp["numerator"], "denominator": fp["denominator"]}
-    ss = rep.get("session_side", {}).get("linked") or []
-    turns_in = turns_out = 0
-    for e in ss:
-        tt = e.get("tree_totals")
-        if isinstance(tt, dict) and tt.get("input_tokens") is not None:
-            turns_in += tt["input_tokens"]
-            turns_out += tt["output_tokens"] or 0
+    u = rep.get("session_side", {}).get("union_totals") or {}
     head["session_side"] = {
-        "linked_turns_input": turns_in, "linked_turns_output": turns_out}
+        "linked_turns_input": u.get("input_tokens"),
+        "linked_turns_output": u.get("output_tokens")}
     return head
 
 

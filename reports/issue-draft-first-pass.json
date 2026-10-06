@@ -1,0 +1,69 @@
+{
+ "title": "legacy 首过率把从未执行的任务计为一次通过（R003: 22/22=100%）",
+ "rule": "metric_defect",
+ "project": "/Users/flb/Sources/Products/ORX",
+ "status": "open",
+ "first_seen": "2026-10-06T01:27:51+00:00",
+ "last_seen": "2026-10-06T01:27:51+00:00",
+ "actual_behavior": "legacy 脚本以 worker_attempts<=1 判首过：R003 上 22/22=100%，其中 12 个任务从未到达验证（多为 replan 取消），被算成一次通过",
+ "expected_behavior": "分母=至少有一条 verification 行的任务；分子=最早行绿且无失败事件；未验证任务在率之外并单独计数（契约 first_acceptance）",
+ "impact": "高估交付质量（R003 从真实 10/10 judged + 12 未验证 虚增为 22/22）；同一缺陷还使 consumption 漏计 planner（revision_id-only 归属，R003 attempts=10 应为 11）",
+ "evidence": {
+  "before_legacy": {
+   "numerator": 22,
+   "denominator": 22,
+   "source": "legacy/orx_analytics.py --run R003 (2026-10-06 实测)"
+  },
+  "after_corrected": {
+   "numerator": 10,
+   "denominator": 10,
+   "tasks_never_verified": 12,
+   "source": "orxanalytics.metrics.run_report R003, snapshot 5"
+  },
+  "consumption_before_legacy": {
+   "attempts": 10
+  },
+  "consumption_after": {
+   "attempts": 11,
+   "planner_via_run_id": true
+  }
+ },
+ "confirmed_causes": [
+  "legacy _first_pass_rate 以 tasks 全表为分母、worker_attempts<=1 为判据",
+  "legacy _consumption 经 revision_id IN (...) 归属，planner attempt revision 为 NULL 被漏掉"
+ ],
+ "hypotheses_to_verify": [],
+ "minimal_fix_suggestion": "改用 docs/metrics.md 冻结口径：最早 verification 行 + 无 failed 事件；run 归属走 attempts.run_id",
+ "acceptance_criteria": [
+  "未验证任务不出现在分母，且 tasks_never_verified 单独可见",
+  "planner attempt（run_id 有值、revision NULL）计入 run 消耗",
+  "回归测试覆盖两口径差异（test_first_pass_rate_corrected / test_planner_counted_via_run_id）"
+ ],
+ "regression_verification": "同一 snapshot 数据上，legacy 与新口径并排给出（before/after 同源可比）",
+ "baseline": null,
+ "confidence": "confirmed",
+ "missing_evidence": [],
+ "linked_refs": [
+  {
+   "kind": "commit",
+   "ref": "b94b432"
+  },
+  {
+   "kind": "run",
+   "ref": "R003"
+  },
+  {
+   "kind": "snapshot",
+   "ref": "5"
+  }
+ ],
+ "linked_fixes": [
+  {
+   "fix_ref": "orx-analytics commit b94b432 (corrected six readings)",
+   "comparable": 1,
+   "verified_at": "2026-10-06T01:27:51+00:00",
+   "note": "same snapshot, same source database: comparable"
+  }
+ ],
+ "note": "draft only: not published anywhere; fix verification is unproven until comparable=true"
+}
