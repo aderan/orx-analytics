@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orx-analytics"
+version = "0.4.0"
+description = "Read-only cross-project, cross-agent execution observability for ORX/zcode/Codex/Cursor"
+requires-python = ">=3.11"
+dependencies = []  # stdlib only at runtime, by design
+
+[project.scripts]
+orx-analytics = "orxanalytics.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

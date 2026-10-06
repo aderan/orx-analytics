@@ -1,0 +1,86 @@
+# 指标口径（冻结）
+
+状态：Phase 1 冻结。修改需在最终报告中记录原因。本文件定义 orx-analytics
+对外发布的每一个数字怎么算、分母是什么、缺失如何呈现。实现以
+`src/orxanalytics/metrics.py` 为准，二者不一致时是缺陷。
+
+## 总原则
+
+1. **未知保持未知**：任何字段缺失（NULL）不补零、不插值、不升级。部分覆盖的
+   和标注为 partial，并同时发布缺失计数。
+2. **覆盖率与准确度分离**：`observed/attempts` 是覆盖率；`exact/estimated/
+   unknown` 是观测行准确度。不混合成一个标签。
+3. **口径可复算**：每个数字都能从已导入的行用一条确定性查询重算；报告附
+   使用的 provenance（来源、reader 版本、快照时间）。
+4. **不计费**：无计费依据，不推算费用或订阅额度。
+5. **token 字段保持原语义**：input/output/cached/cache_write 等按来源原样
+   存储与求和，不做跨工具换算，不做 `input - cached` 之类算术。
+
+## 六读数（ORX 项目）
+
+### 1 交付质量 delivery_quality
+按 `(run_id, revision, task_id)`（短编号全链带 run/revision，绝不跨项目或跨
+revision 并账）列出终态；`passed/terminal` 为该 revision 内比值，分母是
+`passed|failed|cancelled` 的任务数。完成后缺陷来自 findings 记录，无则 NULL。
+
+### 2 交付消耗 consumption
+- 归属：`attempts.run_id = :run`（**不是** `revision_id IN (...)`——后者漏掉
+  revision 为 NULL 的 planner attempt）。
+- 每 attempt 取规范观测：`(attempt_id, source)` 中按 source 优先级
+  `native_cli > host_report > output_estimate`，同级取最小 `usage_observations.id`。
+- 和为 partial sum：任一规范行字段 NULL 时同时发布 `*_missing` 计数。
+- 会话侧对照（zcode 关联可用时）：树汇总 = 关联会话及其全部后代的
+  `turn_usage.input+output`（与 `part.step-finish` 逐步累计互证；二者不一致
+  是缺陷）。会话树与 ORX 侧观测是**两个口径**，分开报告，不互相覆盖。
+
+### 3 完成时间 completion_time
+- `span_sum`：完整执行跨度（`ended_at-started_at`）之和，重叠不合并；不完整
+  跨度计数并列。
+- `waiting`：`runs.completed_at - runs.started_at`（生命期时钟）。
+- 二者分开；都不从 `created_at/updated_at` 推导。
+- 会话时长维度（非 ORX 项目也有）：会话首尾消息时间、模型请求时间合计、
+  工具时间合计、最长无进展间隔（相邻活动之间最大空档）。
+
+### 4 首次交付通过率 first_pass_rate
+- 分母：**至少有一条 verification 行**的任务（`(revision_id, task_id)`）。
+  从未到达验证的任务在率之外（另计入 `not_reached`），不算失败也不算通过。
+- 分子：最早 verification 行（`created_at`, `id` 排序）`passed=1` 且该任务
+  无 `to_status='failed'` 事件。
+- 跨 revision：每个 revision 单独统计；跨 revision 汇总只做任务行级罗列，
+  不把同编号任务合并（见 correlation.md）。
+
+### 5 返工 rework
+每次 `to_status='failed'` 事件一行，附 failure_kind 前缀归类
+（`delivery blocked` / `delivery failed` / `verification`）。区分：
+- 同 attempt 内修复：同 attempt 的多条 command verification 行（check→fix→check）；
+- 跨 attempt 重试：同 `(revision, task)` 的多个 worker attempt；
+- 跨 revision 重做：replan 对应表声明的 `redo` 分类（v9），没有声明就是未知；
+- 重复实现：同源任务多后继/多交付，需 replan 边或 evidence 支撑，否则存疑。
+
+### 6 数据覆盖 coverage
+- ORX 侧：按 role/profile/harness 的 attempts 覆盖（observed /
+  missing_recorded / unassessed），字段级覆盖，会话关联覆盖
+  （有权威 session_ref 的 worker attempt / 总 worker attempt）。
+- 会话侧：已导入会话中 token 观测可用比例；来源探针失败按缺口列出。
+
+## 会话侧基础指标（非 ORX 项目同样可用）
+
+- `session_totals`：单会话 input/output/cache_read/cache_creation/reasoning
+  （turn_usage 汇总）。
+- `tree_totals`：会话树（自身+全部后代，按 id 去重）汇总；父子不重复计数
+  （一次导入中同会话只计一次；重复导入靠天然主键幂等）。
+- `logical requests vs retries`：`model_usage` 按 `logical_request_id` 去重为
+  逻辑请求数；`attempt_index>0` 与状态为重试/错误的行为重试计数。token 求和
+  只用 turn/step 观测，不用请求行数乘任何系数。
+- `tool_activity`：按会话的 tool_calls、错误数、读写分布。
+- Codex：`token_usage_record.usage` 逐响应累计（input/cached/cache_write/
+  output/reasoning 原样）。
+- Cursor：composerData.usageData 原样记录；字段缺失标记 unknown。
+
+## 多 attempt 会话的用量拆分
+
+一个会话承载多个 attempt 时：
+- **会话总量**永远可报（turn_usage 汇总）。
+- **attempt 可归属量**仅当关联依据能定位 attempt 窗口（起止 turn 或时间窗）
+  时计算，并把窗口外用量列为 `unattributed_within_session`。依据不足时只报
+  会话总量并注明不可拆分，不按时间邻近猜测。
