@@ -53,7 +53,29 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("session_id")
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("bundle", help="export an evidence bundle")
+    p.add_argument("kind", choices=["run", "session"])
+    p.add_argument("target", help="project root (run) or session id")
+    p.add_argument("--run", help="run id for kind=run (default latest)")
+    p.add_argument("--dest", required=True)
+    p.add_argument("--title")
+    p.add_argument("--objective", default="")
+    p.add_argument("--fact", action="append", default=[])
+    p.add_argument("--hypothesis", action="append", default=[])
+    p.add_argument("--excluded", action="append", default=[])
+    p.add_argument("--next", action="append", default=[])
+
     p = sub.add_parser("provenance", help="import provenance summary")
+
+    p = sub.add_parser("findings", help="list findings / draft issues")
+    p.add_argument("action", choices=["list", "draft", "dismiss"])
+    p.add_argument("id", nargs="?", help="finding id (draft/dismiss)")
+    p.add_argument("--project")
+    p.add_argument("--note", default="")
+
+    p = sub.add_parser("watch", help="continuous collection loop")
+    p.add_argument("action", choices=["start", "stop", "status", "once"])
+    p.add_argument("--interval", type=int, default=600)
 
     args = ap.parse_args(argv)
 
@@ -139,6 +161,28 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(rep, indent=1, ensure_ascii=False, default=str))
         return 0
 
+    if args.cmd == "bundle":
+        from . import bundle as bundle_mod
+        from pathlib import Path as _P
+        store = _store(args)
+        try:
+            dest = _P(args.dest).expanduser()
+            kw = dict(title=args.title, objective=args.objective,
+                      facts=args.fact, hypotheses=args.hypothesis,
+                      excluded=args.excluded, next_steps=args.next)
+            if args.kind == "run":
+                key = str(_P(args.target).expanduser().resolve())
+                out = bundle_mod.export_run_bundle(
+                    store, key, args.run, dest, **kw)
+            else:
+                out = bundle_mod.export_session_bundle(
+                    store, args.target, dest, **kw)
+        finally:
+            store.close()
+        print(f"bundle written to {out}; run `python3 {out}/recompute.py` "
+              f"to re-verify")
+        return 0
+
     if args.cmd == "provenance":
         from .collect import provenance
         store = _store(args)
@@ -150,6 +194,46 @@ def main(argv: list[str] | None = None) -> int:
             err = f" ERROR={r['last_error']}" if r["last_error"] else ""
             print(f"{r['source_id']}\tlast={r['last_import_at']}{err}\t"
                   f"{json.dumps(r['counts'], ensure_ascii=False)}")
+        return 0
+
+    if args.cmd == "findings":
+        from . import findings as findings_mod
+        store = _store(args)
+        try:
+            if args.action == "list":
+                rows = findings_mod.list_findings(store, args.project)
+                for r in rows:
+                    print(f"[{r['status']}] #{r['id']} {r['rule']} "
+                          f"{r['title']} (last {r['last_seen']})")
+            elif args.action == "draft":
+                if not args.id:
+                    ap.error("findings draft needs a finding id")
+                print(json.dumps(findings_mod.draft_issue(store, int(args.id)),
+                                 indent=1, ensure_ascii=False))
+            elif args.action == "dismiss":
+                if not args.id:
+                    ap.error("findings dismiss needs a finding id")
+                findings_mod.dismiss_finding(store, int(args.id),
+                                             args.note or "dismissed")
+                print(f"finding {args.id} dismissed")
+        finally:
+            store.close()
+        return 0
+
+    if args.cmd == "watch":
+        from . import watch as watch_mod
+        data_dir = Path(args.data_dir) if args.data_dir else None
+        home = data_dir or watch_mod.Store().data_dir
+        if args.action == "start":
+            out = watch_mod.start(home, args.interval)
+        elif args.action == "stop":
+            out = watch_mod.stop(home)
+        elif args.action == "status":
+            out = watch_mod.status(home)
+        else:
+            watch_mod.run_one_round(home, args.interval, once=True)
+            out = {"round": "done", "state": watch_mod.status(home)}
+        print(json.dumps(out, indent=1, ensure_ascii=False, default=str))
         return 0
     return 2
 
