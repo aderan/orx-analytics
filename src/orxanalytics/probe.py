@@ -205,7 +205,11 @@ def probe_orx(project_root: Path) -> ProbeResult:
         ok = sv in ("8", "9")
         gaps = [] if ok else [f"schema gate refuses version {sv} "
                               "(supported: 8, 9)"]
-        runs = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        try:
+            runs = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        except sqlite3.Error:
+            runs = 0
+            gaps.append("runs table unreadable")
         return ProbeResult("orx", ok,
                            f"schema_version={sv}, runs={runs}",
                            fields={"schema_version": sv, "runs": runs},
