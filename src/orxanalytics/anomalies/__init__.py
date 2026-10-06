@@ -12,6 +12,7 @@ store and upserts findings (dedupe by fingerprint).
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,7 @@ DEFAULTS: dict[str, Any] = {
     "repeat_failures": {"enabled": True, "min_failed_events": 2},
     "replan_burst": {"enabled": True, "min_replans": 2, "window_hours": 24},
     "no_progress": {"enabled": True, "min_gap_sec": 3600},
+    "fast_fail_stall": {"enabled": True},
     "coverage_gap": {"enabled": True, "min_unassessed_frac": 0.5,
                      "min_unlinked_frac": 0.5, "min_attempts": 3},
     "check_loop_overflow": {"enabled": True, "budget": 3},
@@ -211,6 +213,64 @@ def no_progress(store: Store, cfg: dict) -> list[RuleResult]:
     return out
 
 
+def fast_fail_stall(store: Store, cfg: dict) -> list[RuleResult]:
+    """A session whose latest turn is a zero-token error turn.
+
+    The silent-stall signature measured on real controller stalls (R006
+    2.48h; To2050 2026-10-06 2h47m): one model request, no retry, no
+    tokens, no tools — the session dies instantly and nothing surfaces
+    until a human happens to return. Errored-after-work turns (nonzero
+    tokens) are a different, visible failure mode and stay out of scope.
+    no_progress needs a 3600s gap before it can even look, so it reports
+    an hour late; this rule fires on the next watch round.
+    """
+    out: list[RuleResult] = []
+    rows = store.conn.execute(
+        "SELECT t.session_id, t.turn_id, t.started_ms, "
+        "t.model_request_count, t.model_retry_count FROM zc_turns t "
+        "JOIN (SELECT session_id, MAX(started_ms) mx FROM zc_turns WHERE "
+        "started_ms IS NOT NULL GROUP BY session_id) m "
+        "ON m.session_id=t.session_id AND m.mx=t.started_ms "
+        "WHERE t.status='error' AND COALESCE(t.input_tokens,0)=0 "
+        "AND COALESCE(t.output_tokens,0)=0").fetchall()
+    now_ms = time.time() * 1000
+    seen: set[str] = set()
+    for r in rows:
+        if r["session_id"] in seen:
+            continue    # two turns sharing the max started_ms
+        seen.add(r["session_id"])
+        minutes = (round((now_ms - r["started_ms"]) / 60000)
+                   if r["started_ms"] else None)
+        out.append(RuleResult(
+            "fast_fail_stall", None, f"session/{r['session_id'][:20]}",
+            f"stall-{r['session_id']}",
+            (f"session's latest turn is a zero-token error turn "
+             f"({minutes}m ago)" if minutes is not None else
+             "session's latest turn is a zero-token error turn"),
+            {"actual_behavior":
+                "turn ended status=error with 0 tokens, 1 request, "
+                "no retry; the session has not progressed since",
+             "expected_behavior":
+                "a fast-failed session surfaces on the next watch "
+                "round, not when a human happens to return",
+             "baseline": {
+                 "signature": "status=error AND input+output tokens=0",
+                 "measured_stalls": [
+                     "R006 controller 2.48h (GLM quota fast-fail)",
+                     "To2050 controller 2026-10-06 2h47m"]},
+             "confidence": "signal",
+             "missing_evidence": [
+                 "the provider error text (turn_usage records no reason)",
+                 "whether the operator intended to stop the session here"],
+             "evidence": {"session_id": r["session_id"],
+                          "turn_id": r["turn_id"],
+                          "minutes_since": minutes,
+                          "model_request_count": r["model_request_count"],
+                          "model_retry_count": r["model_retry_count"]}},
+            [("session", r["session_id"])]))
+    return out
+
+
 def coverage_gap(store: Store, project_key: str,
                  cfg: dict) -> list[RuleResult]:
     out: list[RuleResult] = []
@@ -348,6 +408,7 @@ RULES = {
     "repeat_failures": repeat_failures,
     "replan_burst": replan_burst,
     "no_progress": no_progress,
+    "fast_fail_stall": fast_fail_stall,
     "coverage_gap": coverage_gap,
     "check_loop_overflow": check_loop_overflow,
     "duplicate_delivery": duplicate_delivery,
@@ -364,7 +425,7 @@ def run_all(store: Store, project_keys: list[str],
         rule_cfg = cfg.get(name) or {}
         if not rule_cfg.get("enabled", True):
             continue
-        if name == "no_progress":
+        if name in ("no_progress", "fast_fail_stall"):
             results += fn(store, rule_cfg)
         else:
             for pk in project_keys:

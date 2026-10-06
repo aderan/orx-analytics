@@ -7,6 +7,10 @@ pidfile guards against double starts; a dead pid is reclaimed. Failures
 are recorded and the loop continues: one bad round never stops the watch,
 and the next round resumes from the cursors (idempotent imports mean no
 double counting on recovery).
+
+Newly inserted findings raise one mac notification (confidence "low"
+rows stay silent; ORX_ANALYTICS_NOTIFY=0 disables) — the loop has no
+terminal, so without it a stall finding sits unread until someone looks.
 """
 
 from __future__ import annotations
@@ -118,6 +122,47 @@ def status(data_dir: Path) -> dict:
     return {"running": running, "pid": pid, **state}
 
 
+def _notify(rows: list[dict]) -> int:
+    """One mac notification for newly inserted findings.
+
+    The loop runs detached with no terminal, so a finding that is only
+    recorded changes nothing until someone thinks to look (To2050
+    2026-10-06: a stall finding would have sat unread for hours). Rows
+    whose payload self-describes as confidence "low" (no_progress:
+    gap may be think-time) stay silent; the rest notify once —
+    fingerprint dedupe upstream keeps rounds from repeating themselves.
+    Best-effort: any failure returns 0 and the round continues.
+    Kill switch: ORX_ANALYTICS_NOTIFY=0.
+    """
+    if os.environ.get("ORX_ANALYTICS_NOTIFY") == "0" or not rows:
+        return 0
+    notable: list[dict] = []
+    for row in rows:
+        try:
+            conf = json.loads(row["payload_json"]).get("confidence")
+        except (json.JSONDecodeError, TypeError, KeyError):
+            conf = None
+        if conf != "low":
+            notable.append(row)
+    if not notable:
+        return 0
+    lines = [f'{r["rule"]}: {r["title"]}' for r in notable[:5]]
+    if len(notable) > 5:
+        lines.append(f'… +{len(notable) - 5} more')
+    msg = "\n".join(lines)[:400].replace('"', "'")
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification "{msg}" with title '
+             f'"orx-analytics watch" subtitle '
+             f'"{len(notable)} new finding(s)"'],
+            timeout=10, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    return len(notable)
+
+
 def run_one_round(data_dir: Path, interval: int,
                   once: bool = False) -> None:
     """The loop body. Each round is bounded: incremental imports + rule
@@ -134,6 +179,7 @@ def run_one_round(data_dir: Path, interval: int,
         while True:
             round_started = now_iso()
             error: str | None = None
+            new_findings: list[dict] = []
             try:
                 store = Store(data_dir)
                 try:
@@ -148,16 +194,20 @@ def run_one_round(data_dir: Path, interval: int,
                         correlate.correlate(store, pk)
                     results = anomalies.run_all(store, keys)
                     for r in results:
-                        findings.upsert_finding(store, **r.upsert_args())
+                        row = findings.upsert_finding(store, **r.upsert_args())
+                        if not row.get("merged"):
+                            new_findings.append(row)
                     state["findings_upserted"] = \
                         len(findings.list_findings(store))
                 finally:
                     store.close()
             except Exception as e:  # noqa: BLE001 - loop must survive
                 error = f"{type(e).__name__}: {e}"
+            notified = _notify(new_findings)
             state["rounds"] = state.get("rounds", 0) + 1
             state["last_round_at"] = round_started
             state["last_error"] = error
+            state["notified_last_round"] = notified
             state["pid"] = os.getpid()
             _write_state(data_dir, state)
             if once:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from orxanalytics import anomalies, correlate, findings, registry
 from orxanalytics.importers import import_zcode
@@ -110,3 +111,89 @@ def test_watch_round_once_and_state(world, tmp_path):
     if st["last_error"]:
         assert isinstance(st["last_error"], str)
     assert not (world["store"].data_dir / "watch.pid").exists()
+
+
+def test_fast_fail_stall_signature_scope_recovery(world):
+    store = _loaded(world)
+    ctrl = world["zcode"]["controller"]
+    other = world["zcode"]["other"]
+    # fixture's latest turns are all completed: nothing stalled
+    assert anomalies.fast_fail_stall(store, {}) == []
+
+    now_ms = time.time() * 1000
+    # errored-after-work as a session's latest turn: visible failure,
+    # not the silent stall signature -> out of scope
+    store.conn.execute(
+        "INSERT INTO zc_turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (other, "turn_o_err", "error", now_ms - 60000, now_ms - 1000,
+         59000, 3, 0, 8, 0, 900000, 5000, 0, 0, 0))
+    store.conn.commit()
+    assert anomalies.fast_fail_stall(store, {}) == []
+
+    # zero-token fast-fail as the latest turn -> one signal finding
+    store.conn.execute(
+        "INSERT INTO zc_turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (ctrl, "turn_c3", "error", now_ms - 25 * 60000, None, None,
+         1, 0, 0, 0, 0, 0, 0, 0, 0))
+    store.conn.commit()
+    hits = anomalies.fast_fail_stall(store, {})
+    assert len(hits) == 1 and hits[0].rule == "fast_fail_stall"
+    p = hits[0].payload
+    assert p["confidence"] == "signal"
+    assert p["evidence"]["minutes_since"] == 25
+    assert p["evidence"]["model_retry_count"] == 0
+    assert p["baseline"]["measured_stalls"]      # grounded in real samples
+
+    # a later completed turn means the session recovered -> silent again
+    store.conn.execute(
+        "INSERT INTO zc_turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (ctrl, "turn_c4", "completed", now_ms - 60000, now_ms, 59000,
+         2, 0, 1, 0, 1000, 100, 0, 0, 0))
+    store.conn.commit()
+    assert anomalies.fast_fail_stall(store, {}) == []
+
+
+def test_watch_notify_filter_escape_and_killswitch(monkeypatch):
+    from orxanalytics import watch
+    calls: list = []
+    monkeypatch.delenv("ORX_ANALYTICS_NOTIFY", raising=False)
+    monkeypatch.setattr(watch.subprocess, "run",
+                        lambda *a, **k: calls.append(a))
+    rows = [
+        {"rule": "fast_fail_stall", "title": 'stall "quoted"',
+         "payload_json": '{"confidence": "signal"}'},
+        {"rule": "no_progress", "title": "maybe think-time",
+         "payload_json": '{"confidence": "low"}'},          # stays silent
+        {"rule": "repeat_failures", "title": "failed twice",
+         "payload_json": "not-json"},                       # notify anyway
+    ]
+    assert watch._notify(rows) == 2 and len(calls) == 1
+    script = calls[0][0][2]
+    assert "fast_fail_stall" in script and "repeat_failures" in script
+    assert "no_progress" not in script
+    assert '"quoted"' not in script           # double quotes escaped out
+
+    monkeypatch.setenv("ORX_ANALYTICS_NOTIFY", "0")
+    assert watch._notify(rows) == 0 and len(calls) == 1
+
+
+def test_watch_round_notifies_new_stall(world, monkeypatch):
+    from orxanalytics import watch
+    store = _loaded(world)
+    store.conn.execute(
+        "INSERT INTO zc_turns VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (world["zcode"]["controller"], "turn_c3", "error",
+         time.time() * 1000 - 25 * 60000, None, None, 1, 0, 0, 0,
+         0, 0, 0, 0, 0))
+    store.conn.commit()
+    calls: list = []
+    monkeypatch.setattr(watch.subprocess, "run",
+                        lambda *a, **k: calls.append(a))
+    monkeypatch.setenv("ORX_ANALYTICS_NOTIFY", "1")
+    watch.run_one_round(store.data_dir, 1, once=True)
+    assert any("fast_fail_stall" in c[0][2] for c in calls)
+    st = watch.status(store.data_dir)
+    assert st["notified_last_round"] >= 1
+    # second identical round: fingerprint dedupe -> nothing new, no repeat
+    watch.run_one_round(store.data_dir, 1, once=True)
+    assert len(calls) == 1

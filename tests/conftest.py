@@ -431,3 +431,10 @@ def world(tmp_path):
         "cursor_db": cursor_root / "user" / "globalStorage" / "state.vscdb",
         "store": store,
     }
+
+
+@pytest.fixture(autouse=True)
+def _notifications_off_by_default(monkeypatch):
+    """Tests must never pop real mac notifications; the notify path is
+    exercised with subprocess mocked and the env re-enabled explicitly."""
+    monkeypatch.setenv("ORX_ANALYTICS_NOTIFY", "0")

@@ -49,7 +49,10 @@ def upsert_finding(store: Store, *, rule: str, project_key: str | None,
             "UPDATE findings SET last_seen=?, payload_json=?, title=? "
             "WHERE id=?",
             (ts, json.dumps(payload, ensure_ascii=False), title, finding_id))
-        merged = existing["first_seen"] != ts
+        # seen before this call = merged, full stop. Comparing timestamps
+        # (first_seen != ts) silently mislabelled same-second re-upserts
+        # as new — now_iso() truncates to seconds.
+        merged = True
     for kind, ref in refs or []:
         store.conn.execute(
             "INSERT OR IGNORE INTO finding_refs VALUES (?,?,?)",

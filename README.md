@@ -56,6 +56,13 @@ orx-analytics watch once                   # 手动单轮（不驻留）
 - 恢复：单轮失败记录在 `watch.state.json` 的 `last_error` 并继续；游标
   保证恢复后不漏算不重算（回归测试覆盖）。
 - 有界开销：每轮只处理增量；异常规则只查当前快照与已导入行。
+- 通知：本轮**新增**的 finding 发一条 mac 通知（confidence=low 的
+  自我存疑行不叫，如 no_progress 的"可能是思考时间"）；指纹去重保证
+  同一 finding 只在首次插入时通知。`ORX_ANALYTICS_NOTIFY=0` 关闭。
+- 停摆即报：`fast_fail_stall` 规则盯"会话最新 turn 是零 token 错误
+  turn"（实测签名：1 请求/0 retry/0 token/0 工具）——R006 2.48h 与
+  To2050 2h47m 两次停摆同款。no_progress 要等 1h 间隔才够得着，这条
+  下一轮（≤10min）就报。
 
 ## 异常调查
 
@@ -66,7 +73,8 @@ orx-analytics findings dismiss <id> --note "..."
 ```
 
 规则（可配置阈值，命中与不命中都有测试）：用量离群（同 role/profile
-基线，样本不足不判定）、重复失败、短窗重规划、长无进展、覆盖缺口
+基线，样本不足不判定）、重复失败、短窗重规划、长无进展、快失败停摆
+（零 token 错误 turn 且为会话最新 turn）、覆盖缺口
 （未评估用量/未关联会话）、同 attempt 检查轮超限、声明边上的疑似重复
 交付（仅 rev1 已 passed 的声明 redo 触发，且提示需核对范围）。
 每条发现带触发依据、比较基线、置信度、待补证据——是信号，不是结论。
