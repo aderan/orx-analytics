@@ -11,6 +11,6 @@ Design invariants (see docs/ in the repo):
 - No billing basis exists in any source; no fees are computed.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
-READER_VERSION = "orx-analytics 0.4.0 reader"
+READER_VERSION = f"orx-analytics {__version__} reader"

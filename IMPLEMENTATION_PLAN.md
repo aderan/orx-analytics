@@ -8,10 +8,10 @@
 **Goal**: Complete package metadata, one version source, module entry, artifact installation checks and CI.
 **Success Criteria**: Wheel built from sdist installs in a clean environment; CLI works outside the checkout without runtime dependencies or real data access.
 **Tests**: CLI module behavior; clean wheel/sdist install, version, help, registry and isolated collection.
-**Status**: In Progress
+**Status**: Complete
 
 ## Stage 3: Documentation and remote delivery
 **Goal**: Record the independent-repository decision; document installation, upgrades, source support and contribution; push main.
 **Success Criteria**: Documentation matches verified commands and source capabilities; GitHub main matches local HEAD.
 **Tests**: Full pytest suite, package installation check, diff checks and remote commit comparison.
-**Status**: Not Started
+**Status**: In Progress

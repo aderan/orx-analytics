@@ -438,3 +438,22 @@ def _notifications_off_by_default(monkeypatch):
     """Tests must never pop real mac notifications; the notify path is
     exercised with subprocess mocked and the env re-enabled explicitly."""
     monkeypatch.setenv("ORX_ANALYTICS_NOTIFY", "0")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_default_collection(monkeypatch, tmp_path):
+    """A watch round must not import the developer's real session history.
+
+    Direct importer tests supply their synthetic sources explicitly. The
+    watch loop's default collect path sees absent sources in this test's
+    temporary directory, exercising honest error reporting on every host.
+    """
+    from functools import partial
+    from orxanalytics import collect, importers
+
+    monkeypatch.setattr(collect, "import_zcode", partial(
+        importers.import_zcode, db=tmp_path / "absent-zcode.db"))
+    monkeypatch.setattr(collect, "import_codex", partial(
+        importers.import_codex, sessions_dir=tmp_path / "absent-codex"))
+    monkeypatch.setattr(collect, "import_cursor", partial(
+        importers.import_cursor, db=tmp_path / "absent-cursor.db"))
