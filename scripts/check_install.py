@@ -39,6 +39,12 @@ def require(condition: bool, message: str) -> None:
         raise RuntimeError(message)
 
 
+def require_installed_module(module_path: Path, environment: Path) -> None:
+    # macOS exposes the same temporary directory as /var and /private/var.
+    require(module_path.resolve().is_relative_to(environment.resolve()),
+            f"CLI module {module_path} is outside its installed environment {environment}")
+
+
 def source_version() -> str:
     tree = ast.parse((ROOT / "src/orxanalytics/__init__.py").read_text())
     for statement in tree.body:
@@ -127,8 +133,7 @@ def check_install() -> None:
             "print(json.dumps({'file': orxanalytics.__file__, "
             "'version': version('orx-analytics'), 'reader': orxanalytics.READER_VERSION}))"
         ], work, env))
-        require(Path(installed["file"]).is_relative_to(environment),
-                "CLI imports from the checkout rather than its installed wheel")
+        require_installed_module(Path(installed["file"]), environment)
         require(installed["version"] == version and version in installed["reader"],
                 "Installed metadata, reader identity and CLI version disagree")
         require(not (work / "data").exists(), "Help/version unexpectedly creates data")
