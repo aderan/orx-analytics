@@ -10,8 +10,14 @@
 **Tests**: CLI module behavior; clean wheel/sdist install, version, help, registry and isolated collection.
 **Status**: Complete
 
-## Stage 3: Documentation and remote delivery
-**Goal**: Record the independent-repository decision; document installation, upgrades, source support and contribution; push main.
-**Success Criteria**: Documentation matches verified commands and source capabilities; GitHub main matches local HEAD.
-**Tests**: Full pytest suite, package installation check, diff checks and remote commit comparison.
+## Stage 3: Documentation
+**Goal**: Record the independent-repository decision; document installation, upgrades, source support and contribution.
+**Success Criteria**: Documentation matches verified commands and source capabilities.
+**Tests**: Full pytest suite, package installation check and diff checks.
+**Status**: Complete
+
+## Stage 4: Safe remote delivery
+**Goal**: Remove generated data from unpublished history after GitHub rejected a historical runtime database; preserve the original history locally and publish clean main.
+**Success Criteria**: Local files and verified original-history backup remain available; generated data is absent from all published commits; GitHub main matches local HEAD; remote install and CI pass.
+**Tests**: History path check, source and install regression, normal push with hooks/protection enabled, remote install and CI.
 **Status**: In Progress

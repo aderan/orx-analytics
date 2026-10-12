@@ -58,3 +58,9 @@ ORX schema、analytics store 版本和软件版本分别管理。
 这些测试和安装检查；当前矩阵覆盖 Linux/Python 3.11、macOS/Python 3.12、
 Linux/Python 3.14。GitHub main 是当前分发来源；需要固定版本时记录
 commit SHA。PyPI 发布或 tag/release 流程另行安排，不属于现有 CI 的自动行为。
+
+运行数据库、原始采集数据、证据包、虚拟环境和本地执行状态不进入 Git。
+使用 `var/` 或仓库外的数据目录保存这些产物；`reports/` 只保存经检查的
+报告。公开仓库前也要检查提交历史，删除最新版本里的文件不等于删除历史。
+0.4.1 首次公开发布前，GitHub push protection 检出了历史运行数据库中的
+密钥；发布历史已移除生成数据与虚拟环境，原始完整历史备份仅在本机保留。

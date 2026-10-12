@@ -3,8 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/
-var/analytics.db
-var/watch.*
+var/
 .orx/
 *.egg-info/
 build/
