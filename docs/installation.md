@@ -23,6 +23,13 @@ uv 会为工具创建隔离环境；`--python 3.12` 明确指定满足最低要�
 如果终端找不到命令，运行 `uv tool update-shell` 后重新打开终端。
 工具环境与 PATH 的行为见 [uv 工具文档](https://docs.astral.sh/uv/guides/tools/)。
 
+如果本机 Git HTTPS/代理连接不可用，且已经配置 GitHub SSH 身份，可用
+同一仓库的 SSH 来源安装，不需要更改全局代理配置：
+
+```sh
+uv tool install --python 3.12 'git+ssh://git@github.com/aderan/orx-analytics.git@main'
+```
+
 升级仍跟踪 main 的安装：
 
 ```sh
