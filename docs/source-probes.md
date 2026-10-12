@@ -1,5 +1,9 @@
 # 数据源探测基线（2026-10-06，本机实测）
 
+本文保留当时的探测事实和调查进展。当前版本支持以
+[compatibility.md](compatibility.md) 为准；下文旧版本 gate、旧 README
+缺陷和机器上的行数均不是当前支持声明。
+
 执行：ZCode 会话内逐源实测（见 Goal Phase 1）。能力矩阵与已知缺口。
 
 ## zcode — `~/.zcode/cli/db/db.sqlite`

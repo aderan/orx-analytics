@@ -1,0 +1,20 @@
+# 版本记录
+
+## 0.4.1 — 2026-10-12
+
+- 确认独立仓库、独立工具和只读 ORX 集成，记录 ADR-0001。
+- 接受 ORX schema v12 的 `zcode_db` 观测，规范来源优先级同步到报告、
+  异常规则和证据包复算；拒绝未知未来 schema。
+- 完善 README、安装升级卸载、来源兼容、Controller 集成和贡献说明。
+- 完善标准 Python 包元数据，版本统一从 `__version__` 读取。
+- 增加 `python -m orxanalytics`，与 console entry 共用入口。
+- 增加 sdist→wheel→新虚拟环境离线安装检查，验证 CLI、项目登记、
+  隔离采集和数据目录优先级。
+- 增加 Linux/macOS 的测试与安装 CI；隔离测试中的真实会话来源。
+- 停止跟踪 bytecode、egg-info 等生成文件，忽略本地 ORX 执行状态。
+
+## 0.4.0 — 既有基线
+
+提供跨项目多来源采集、ORX 六读数、ZCode 会话报告、关联依据、异常
+发现、本地 Issue 草案、可离线复算的证据包和持续 watch。
+此前实现和实测记录保留在仓库历史与 `reports/` 中。
