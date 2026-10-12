@@ -27,7 +27,9 @@ revision 并账）列出终态；`passed/terminal` 为该 revision 内比值，�
 - 归属：`attempts.run_id = :run`（**不是** `revision_id IN (...)`——后者漏掉
   revision 为 NULL 的 planner attempt）。
 - 每 attempt 取规范观测：`(attempt_id, source)` 中按 source 优先级
-  `native_cli > host_report > output_estimate`，同级取最小 `usage_observations.id`。
+  `native_cli > zcode_db > host_report > output_estimate`（v12 契约第六修正
+  引入 `zcode_db`，序次在 native_cli 之后、host_report 之前），同级取最小
+  `usage_observations.id`。
 - 和为 partial sum：任一规范行字段 NULL 时同时发布 `*_missing` 计数。
 - 会话侧对照（zcode 关联可用时）：树汇总 = 关联会话及其全部后代的
   `turn_usage.input+output`（与 `part.step-finish` 逐步累计互证；二者不一致

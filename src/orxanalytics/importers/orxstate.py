@@ -1,8 +1,8 @@
 """ORX per-project state.db importer.
 
 Follows docs/observability-contract.md of the ORX repo: schema gate accepts
-exactly {8, 9, 10} (single source: probe.SUPPORTED_ORX_SCHEMA); named columns
-only; read-only in place. Each collect appends one snapshot per project;
+exactly {8, 9, 10, 11, 12} (single source: probe.SUPPORTED_ORX_SCHEMA);
+named columns only; read-only in place. Each collect appends one snapshot per project;
 snapshots are append-only, so a run's numbers are recomputed from any
 snapshot again later.
 """
@@ -73,9 +73,11 @@ _V10_TABLES: list[tuple[str, str, list[str]]] = [
      ["id", "attempt_id", "sequence", "phase", "message", "received_at"]),
 ]
 
-# v11 adds the one-time identity nonce column on attempts; the core column
-# list stays version-free, so the importer rebinds the attempts entry with
-# the extra column for v11 files only (v8-v10 files have no such column).
+# v11 adds the one-time identity nonce column on attempts; v12 only widens
+# the usage_observations.source CHECK (admitting 'zcode_db') and keeps the
+# v11 shape otherwise — no new columns on either. The core column list
+# stays version-free, so the importer rebinds the attempts entry with the
+# extra column for v11/v12 files only (v8-v10 files have no such column).
 _ATTEMPT_NONCE_EXTRA = ["nonce"]
 
 _SOURCE_TO_MIRROR_COL = {
@@ -107,7 +109,7 @@ def import_orx_project(store: Store, project_key: str) -> dict:
                 tables += _V9_TABLES
             if pr.fields["schema_version"] == "10":
                 tables += _V10_TABLES
-            if pr.fields["schema_version"] == "11":
+            if pr.fields["schema_version"] in ("11", "12"):
                 tables += _V9_TABLES + _V10_TABLES
                 tables = [
                     (mirror, src, cols + _ATTEMPT_NONCE_EXTRA)

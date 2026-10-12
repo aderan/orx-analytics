@@ -7,8 +7,9 @@ Differences from the legacy script this package replaces:
   the no-failed-events rule, and excludes tasks that never reached
   verification;
 - consumption collapses to the canonical observation per attempt — best
-  source first (native_cli > host_report > output_estimate), lowest id
-  within a source — before summing, and publishes missing-field counts;
+  source first (native_cli > zcode_db > host_report > output_estimate),
+  lowest id within a source — before summing, and publishes missing-field
+  counts;
 - spans and waiting are separate; session trees dedupe by id; unknown
   values stay unknown.
 
@@ -24,7 +25,10 @@ from typing import Any
 from . import correlate
 from .store import Store
 
-_RANK = {"native_cli": 0, "host_report": 1, "output_estimate": 2}
+# contract order (ORX docs/observability-contract.md): native_cli >
+# zcode_db > host_report > output_estimate; unknown sources sort last
+_RANK = {"native_cli": 0, "zcode_db": 1, "host_report": 2,
+         "output_estimate": 3}
 
 
 def _snapshot(store: Store, project_key: str) -> int:

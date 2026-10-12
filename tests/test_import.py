@@ -150,6 +150,59 @@ def test_orx_v11_file_imports_nonce_column(world):
     assert rows[202]["nonce"] is None
 
 
+def test_orx_v12_file_imports_zcode_db_usage(world):
+    # v12 keeps the v11 shape (nonce column present, replan+progress tables)
+    # and only widens the usage source CHECK: a zcode_db observation imports,
+    # and canonical selection ranks it between native_cli and host_report
+    v12 = world["tmp"] / "v12proj"
+    (v12 / ".orx").mkdir(parents=True)
+    from conftest import make_orx_db
+    make_orx_db(v12 / ".orx" / "state.db")
+    conn = sqlite3.connect(v12 / ".orx" / "state.db")
+    conn.execute("UPDATE meta SET value='12'")
+    conn.execute(
+        "CREATE TABLE attempt_progress (id INTEGER PRIMARY KEY "
+        "AUTOINCREMENT, attempt_id INTEGER NOT NULL, sequence INTEGER "
+        "NOT NULL, phase TEXT NOT NULL, message TEXT, received_at TEXT "
+        "NOT NULL, UNIQUE(attempt_id, sequence))")
+    conn.execute("ALTER TABLE attempts ADD COLUMN nonce TEXT")
+    conn.execute(
+        "UPDATE attempts SET nonce='orx-assignment:9c1d0a34-1e2f-4a3b-8c5d-"
+        "000000000201' WHERE id=201")
+    # attempt 203 had no observation; give it host_report (lower id) and
+    # zcode_db — zcode_db must win the canonical slot on rank, not id
+    conn.executemany(
+        "INSERT INTO usage_observations VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        [(305, 203, "cursor-strong", "R001", "T001", 700, 70, 0,
+          "host_report", "exact", "2026-10-04T12:00:30+00:00"),
+         (306, 203, "cursor-strong", "R001", "T001", 800, 80, 400,
+          "zcode_db", "exact", "2026-10-04T12:00:31+00:00")])
+    conn.commit()
+    conn.close()
+    r = import_orx_project(world["store"], str(v12))
+    assert "error" not in r, r
+    assert r["counts"]["orx_replan_sources"] == 1
+    assert r["counts"]["orx_attempt_progress"] == 0   # table present, empty
+    rows = {row["id"]: row for row in world["store"].conn.execute(
+        "SELECT id, nonce FROM orx_attempts WHERE snapshot_id=?",
+        (r["snapshot_id"],))}
+    assert rows[201]["nonce"] == (
+        "orx-assignment:9c1d0a34-1e2f-4a3b-8c5d-000000000201")
+    assert rows[202]["nonce"] is None
+    src = world["store"].conn.execute(
+        "SELECT source FROM orx_usage_obs WHERE snapshot_id=? AND id=306",
+        (r["snapshot_id"],)).fetchone()["source"]
+    assert src == "zcode_db"
+    # canonical sums: planner 398699/10755 + 201 native 1000/100
+    # + 202 native 5000/500 + 203 zcode_db 800/80 (host_report 700/70 loses)
+    from orxanalytics import metrics
+    rep = metrics.run_report(world["store"], str(v12), "R001")
+    c = rep["consumption"]
+    assert c["attempts_with_observation"] == 4
+    assert c["input_tokens_sum"] == 398699 + 1000 + 5000 + 800
+    assert c["output_tokens_sum"] == 10755 + 100 + 500 + 80
+
+
 def test_store_v1_upgrades_to_v2_adding_nonce_column(tmp_path):
     """An existing analytics.db (store v1, orx_attempts without nonce) opens,
     upgrades in place, and keeps its rows; a foreign future version still

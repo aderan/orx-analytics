@@ -83,7 +83,7 @@ def test_probe_orx_gate(tmp_path):
     assert not r.ok  # gate refuses 7 exactly like the contract
 
 
-def test_probe_orx_gate_accepts_v10_v11(tmp_path):
+def test_probe_orx_gate_accepts_v10_v11_v12(tmp_path):
     root = tmp_path / "proj"
     (root / ".orx").mkdir(parents=True)
     conn = sqlite3.connect(root / ".orx" / "state.db")
@@ -106,8 +106,16 @@ def test_probe_orx_gate_accepts_v10_v11(tmp_path):
     conn.execute("UPDATE meta SET value='12' WHERE key='schema_version'")
     conn.commit()
     conn.close()
+    # v12 (contract sixth amendment, 2026-10-08): additive only — the
+    # usage_observations.source CHECK admits 'zcode_db'; no new columns
+    r = probe.probe_orx(root)
+    assert r.ok and r.fields["schema_version"] == "12"
+    conn = sqlite3.connect(root / ".orx" / "state.db")
+    conn.execute("UPDATE meta SET value='13' WHERE key='schema_version'")
+    conn.commit()
+    conn.close()
     # versions beyond the contract are still refused: widen only when the
     # ORX contract amendment lands
     r = probe.probe_orx(root)
     assert not r.ok
-    assert any("12" in g for g in r.gaps)
+    assert any("13" in g for g in r.gaps)

@@ -62,7 +62,8 @@ def usage_outlier(store: Store, project_key: str,
     snap = _latest_snapshot(store, project_key)
     if snap is None:
         return out
-    rank = {"native_cli": 0, "host_report": 1, "output_estimate": 2}
+    rank = {"native_cli": 0, "zcode_db": 1, "host_report": 2,
+            "output_estimate": 3}
     best: dict[int, dict] = {}
     for u in store.conn.execute(
         "SELECT u.id, u.attempt_id, u.input_tokens, u.output_tokens, "

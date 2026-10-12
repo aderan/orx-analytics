@@ -29,7 +29,10 @@ from typing import Any
 from . import READER_VERSION, correlate, metrics
 from .store import Store
 
-_RANK = {"native_cli": 0, "host_report": 1, "output_estimate": 2}
+# contract order (ORX docs/observability-contract.md); unknown sources
+# sort last wherever this is consulted
+_RANK = {"native_cli": 0, "zcode_db": 1, "host_report": 2,
+         "output_estimate": 3}
 
 
 def _dump(dest: Path, rel: str, obj: Any) -> str:
@@ -162,7 +165,8 @@ head = bundle["headline"]
 atts = maybe("attempts.json")
 obs = maybe("usage_observations.json")
 if atts is not None and obs is not None:
-    rank = {"native_cli": 0, "host_report": 1, "output_estimate": 2}
+    rank = {"native_cli": 0, "zcode_db": 1, "host_report": 2,
+            "output_estimate": 3}
     best = {}
     for u in obs:
         k = (rank.get(u["source"], 9), u["id"])
@@ -354,9 +358,9 @@ def _write_bundle(dest: Path, title: str, objective: str, scope: dict,
         "headline": headline,
         "definitions": {
             "consumption": "canonical observation per attempt (source rank "
-                           "native_cli>host_report>output_estimate, lowest "
-                           "id within source), partial sums flagged, no "
-                           "fee math",
+                           "native_cli>zcode_db>host_report>output_estimate, "
+                           "lowest id within source), partial sums flagged, "
+                           "no fee math",
             "first_pass": "denominator = tasks with >=1 verification row; "
                           "numerator = earliest row green AND no failed "
                           "task_events; never-verified tasks are outside",
