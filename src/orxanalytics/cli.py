@@ -88,9 +88,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--project")
     p.add_argument("--note", default="")
 
-    p = sub.add_parser("watch", help="continuous collection loop")
+    p = sub.add_parser(
+        "watch", help="collection demand on the coordination engine")
     p.add_argument("action", choices=["start", "stop", "status", "once"])
-    p.add_argument("--interval", type=int, default=600)
+    p.add_argument("--interval", type=int, default=600,
+                   help="legacy: only the once round's sleep; the engine "
+                        "owns collection cadence")
 
     args = ap.parse_args(argv)
 
@@ -274,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         data_dir = Path(args.data_dir) if args.data_dir else None
         home = data_dir or watch_mod.Store().data_dir
         if args.action == "start":
-            out = watch_mod.start(home, args.interval)
+            out = watch_mod.start(home)
         elif args.action == "stop":
             out = watch_mod.stop(home)
         elif args.action == "status":

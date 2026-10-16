@@ -36,12 +36,14 @@ uv tool install --python 3.12 'git+ssh://git@github.com/aderan/orx-analytics.git
 orx-analytics watch stop
 uv tool upgrade orx-analytics
 orx-analytics --version
-# 如果你需要长期观察，再启动：
-orx-analytics watch start --interval 600
+# 如果你需要长期观察，再启动（引擎未运行时会自动拉起）：
+orx-analytics watch start
 ```
 
 只有在你负责该 watcher 时才停止它。使用自定义数据目录时，所有 watch
-命令也要使用同一个 `--data-dir` 或 `ORX_ANALYTICS_HOME`。
+命令也要使用同一个 `--data-dir` 或 `ORX_ANALYTICS_HOME`。从旧版独立
+watcher 升级到引擎协作语义的识别与停旧起新流程见
+[迁移指引](watch-migration.md)。
 从固定 commit 切换到 main，或明确重装来源时：
 
 ```sh
@@ -110,7 +112,7 @@ uv tool install --python 3.12 .
 |---|---|
 | 默认分析数据 | `~/.orx-analytics/analytics.db`，包含项目登记、导入结果、游标、findings |
 | 数据目录优先级 | `--data-dir` > `ORX_ANALYTICS_HOME` > `~/.orx-analytics/` |
-| watch 状态 | 同一数据目录中的 `watch.pid` 和 `watch.state.json` |
+| watch 状态 | 同一数据目录中的 `watch-demand.pid`、`watch-demand.state.json`（CLI 需求）与 `watch.state.json`（once 轮次）；`engine.sock`/`engine.lock` 属于协调引擎，`watch.pid` 只由旧版循环写入（见[迁移指引](watch-migration.md)） |
 | macOS 通知 | `ORX_ANALYTICS_NOTIFY=0` 关闭；不影响采集与 findings |
 | ORX 可选接入 | `ORX_ANALYTICS_BIN` 由 ORX Controller 读取，见[集成指南](orx-integration.md) |
 

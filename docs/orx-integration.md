@@ -40,10 +40,11 @@ export ORX_ANALYTICS_BIN="$(command -v orx-analytics)"
 
 ## watcher 的所有权
 
-推荐由操作者统一启动跨项目的长期 watcher：
+推荐由操作者统一启动跨项目的长期采集需求（新版 `watch start` 向协调
+引擎注册需求，引擎未运行时自动拉起，见[迁移指引](watch-migration.md)）：
 
 ```sh
-orx-analytics watch start --interval 600
+orx-analytics watch start
 orx-analytics watch status
 orx-analytics findings list
 ```
