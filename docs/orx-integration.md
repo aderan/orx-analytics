@@ -59,3 +59,52 @@ Controller 只可清理本会话实际启动的 watcher；已经存在的实例�
 操作者可检查它们，再把明确的目标交给 ORX。当前没有自动创建 Inbox、
 自动发布 Issue、自动恢复会话或自动修复的连接；新增这些连接必须
 另行定义接纳、授权和幂等规则。
+
+## 项目索引消费契约（ORX 用户级项目索引）
+
+ORX（G002/T004 起）在每次 `orx run` 派发执行时，向用户级项目索引
+登记当前项目；本工具只读消费该索引做自动发现，状态与用量仍以各项目
+`.orx/state.db` 为唯一事实源。
+
+**位置解析**（与 ORX `user_data_dir()` 一致）：
+
+```
+ORX_DATA_DIR > XDG_DATA_HOME/orx > ~/.local/share/orx
+```
+
+索引文件为 `<数据目录>/projects-index.json`，锁文件
+`projects-index.lock`（消费方忽略，不获取）。
+
+**格式**（`index_version` 目前为 `1`）：
+
+```json
+{
+  "index_version": 1,
+  "updated_at": "<iso8601 utc>",
+  "projects": {
+    "/canonical/path": {
+      "canonical_path": "/canonical/path",
+      "name": "<目录名>",
+      "first_seen_at": "<iso8601 utc>",
+      "last_seen_at": "<iso8601 utc>",
+      "last_run_id": "R002 | null",
+      "has_state_db": true
+    }
+  }
+}
+```
+
+**消费规则**：
+
+- 键即 canonical path（ORX 侧已做符号链接解析）；消费方合并发现来源
+  时按 `Path(...).expanduser().resolve()` 归一后对齐，不凭目录名认定
+  同一项目。
+- `has_state_db=false` 的项目只做基础会话分析，不采集 ORX 快照。
+- `last_run_id` 只是提示，不是身份键；Run 身份=Project+run_id。
+- 消费方只读：不写、不删、不加锁；文件可能不存在（旧版 ORX）——
+  此时自动发现范围受限，应显式提示而非报错。
+- `index_version` 不认识（未来版本）或 JSON 损坏时：ORX 写侧会拒绝
+  改写该文件，读侧应跳过索引来源并报告数据健康（版本不支持/来源
+  不可读），不影响 registry 已登记项目的采集。
+- 索引登记失败在 ORX 侧只留记录、绝不阻塞执行；因此消费方不能假设
+  索引完备——项目在索引缺失而 registry 在册时以 registry 为准。
