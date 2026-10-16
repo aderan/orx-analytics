@@ -7,6 +7,12 @@ public struct QueryWarning: Codable, Equatable {
     public let code: String
     public let project: String?
     public let detail: String?
+
+    public init(code: String, project: String? = nil, detail: String? = nil) {
+        self.code = code
+        self.project = project
+        self.detail = detail
+    }
 }
 
 /// The `snapshots` map entry: which successful snapshot served this
@@ -51,6 +57,14 @@ public struct DataHealthBlock: Codable, Equatable {
     public let schemaSupported: Bool?
     public let stale: Bool?
 
+    public init(health: String?, sourceReadable: Bool? = nil,
+                schemaSupported: Bool? = nil, stale: Bool? = nil) {
+        self.health = health
+        self.sourceReadable = sourceReadable
+        self.schemaSupported = schemaSupported
+        self.stale = stale
+    }
+
     enum CodingKeys: String, CodingKey {
         case health, stale
         case sourceReadable = "source_readable"
@@ -66,6 +80,14 @@ public struct ProjectHealthRow: Codable, Equatable, Identifiable {
     public let takenAt: String?
 
     public var id: String { project }
+
+    public init(project: String, dataHealth: DataHealthBlock? = nil,
+                snapshotID: Int? = nil, takenAt: String? = nil) {
+        self.project = project
+        self.dataHealth = dataHealth
+        self.snapshotID = snapshotID
+        self.takenAt = takenAt
+    }
 
     enum CodingKeys: String, CodingKey {
         case project

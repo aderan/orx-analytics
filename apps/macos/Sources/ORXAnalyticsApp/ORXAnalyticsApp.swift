@@ -1,6 +1,29 @@
 import SwiftUI
 import ORXAnalyticsCore
 
+/// The one model instance for the whole process. SwiftUI may construct
+/// the App value more than once; routing every construction through the
+/// same instance keeps the runtime coordinator (wake observer,
+/// notification click router) and the UI bound to the same object.
+@MainActor
+private enum AppRuntime {
+    static let settingsStore = UserDefaultsAppSettingsStore()
+
+    static let model: AppModel = {
+        // Honor the user's explicit data-directory choice (settings) —
+        // resolution order: explicit override > ORX_ANALYTICS_HOME >
+        // default home (design §8).
+        let initial = settingsStore.load()
+        let client = EngineSocketClient(socketPath: initial.resolvedSocketPath())
+        let model = AppModel(client: client,
+                             cache: OverviewCacheStore.makeDefault(),
+                             settingsStore: settingsStore,
+                             notifications: SystemNotificationCenter())
+        RuntimeCoordinator.shared.start(model: model)
+        return model
+    }()
+}
+
 /// ORX Analytics menu-bar app (design §3/§7/§9).
 ///
 /// - `MenuBarExtra` is the persistent entry: icon + the in-progress Run
@@ -24,10 +47,11 @@ struct ORXAnalyticsApp: App {
             let ok = SmokeRunner.runAndReport()
             exit(ok ? 0 : 1)
         }
-        let client = EngineSocketClient(socketPath:
-            EngineSocketClient.defaultSocketPath())
-        _model = StateObject(wrappedValue: AppModel(client: client,
-                                                    cache: OverviewCacheStore.makeDefault()))
+        // AFTER the smoke early-exit so the self-check never touches the
+        // real defaults domain, the notification center or the workspace.
+        // SwiftUI constructs the App on the main thread, so the isolated
+        // model bootstrap is safe to assume here.
+        _model = StateObject(wrappedValue: MainActor.assumeIsolated { AppRuntime.model })
     }
 
     var body: some Scene {
@@ -45,6 +69,10 @@ struct ORXAnalyticsApp: App {
                     Text("\(model.activeRunCount)")
                 }
             }
+            // The menu-bar label lives as long as the app does, so it
+            // can donate its `openWindow` action for notification-click
+            // routing (通知点击进入对应执行).
+            .background(OpenWindowDonation())
         }
         .menuBarExtraStyle(.window)
 
@@ -58,9 +86,32 @@ struct ORXAnalyticsApp: App {
         }
         .windowResizability(.contentSize)
 
+        // T011: the diagnostics window (引擎重复失败 / 单源失败入口).
+        Window("诊断", id: "diagnostics") {
+            DiagnosticsView()
+                .environmentObject(model)
+        }
+        .windowResizability(.contentSize)
+
         Settings {
             SettingsView()
                 .environmentObject(model)
         }
+    }
+}
+
+/// Invisible helper that captures the label's `openWindow` environment
+/// action into the runtime coordinator's box.
+private struct OpenWindowDonation: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onAppear {
+                RuntimeCoordinator.shared.windowActions.openRunDetail = {
+                    openWindow(id: "run-detail")
+                }
+            }
     }
 }

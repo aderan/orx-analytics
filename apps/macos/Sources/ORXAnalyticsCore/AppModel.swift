@@ -35,8 +35,25 @@ public final class AppModel: ObservableObject {
     /// project + run context (design §3: 保留项目和执行上下文).
     @Published public private(set) var selectedRun: RunIdentity?
 
+    // T011 (design §4/§8/§9): settings, notifications, diagnostics,
+    // sleep/wake resync.
+    /// Current effective preferences (loaded from the store at init;
+    /// conservative defaults when no store is injected — tests and the
+    /// smoke path never touch the real defaults domain).
+    @Published public private(set) var settings: AppSettings = .default
+    /// The OS verdict for notification authorization; only meaningful
+    /// after the user opted in (default: never asked).
+    @Published public private(set) var notificationAuth: NotificationAuthState = .notDetermined
+    /// Engine-round failure bookkeeping driving the diagnostics view.
+    @Published public private(set) var diagnostics = DiagnosticsState()
+    /// When the system last woke from sleep (design §8: 睡眠期间不判定
+    /// 停摆；唤醒后重新同步).
+    @Published public private(set) var wokeAt: Date?
+
     public let client: EngineClientProtocol
     public let cache: OverviewCacheStore
+    /// Where preferences persist (nil = in-memory defaults).
+    public let settingsStore: AppSettingsStore?
     /// The history query window's model. Owned here (not per-view) so
     /// results and filter state survive navigating into a run detail
     /// and back — the window keeps its context (design §3).
@@ -46,11 +63,20 @@ public final class AppModel: ObservableObject {
     /// coalesce into the in-flight one (design §8: 多个刷新请求合并).
     private var refreshTask: Task<Void, Never>?
     private var autoRefreshTask: Task<Void, Never>?
+    private let notifier: NotificationPosting?
+    private var notificationPolicy = NotificationPolicy()
 
-    public init(client: EngineClientProtocol, cache: OverviewCacheStore) {
+    public init(client: EngineClientProtocol, cache: OverviewCacheStore,
+                settingsStore: AppSettingsStore? = nil,
+                notifications: NotificationPosting? = nil) {
         self.client = client
         self.cache = cache
+        self.settingsStore = settingsStore
+        self.notifier = notifications
         self.historyModel = HistoryModel(client: client)
+        if let settingsStore {
+            settings = settingsStore.load()
+        }
     }
 
     // MARK: - Badge (menu bar)
@@ -134,10 +160,14 @@ public final class AppModel: ObservableObject {
             lastFailureText = EngineFailure.incompatible(requested: requested,
                                                          supported: supported,
                                                          message: "").localizedDescription
+            diagnostics.recordFailure(lastFailureText ?? "协议不兼容")
             return
         case .engineNotRunning:
             connection = .notRunning("引擎未运行（socket 无监听）。缓存数据继续展示。")
             lastFailureText = nil    // not an error worth alarming about
+            // Still counted for diagnostics: a repeatedly absent engine
+            // deserves the diagnostics entry (with 旧数据时间) too.
+            diagnostics.recordFailure("引擎未运行（socket 无监听）")
             return
         }
 
@@ -152,8 +182,11 @@ public final class AppModel: ObservableObject {
             cachedOverview = cached
             lastRefreshedAt = cached.cachedAt
             lastFailureText = nil
+            diagnostics.recordSuccess(at: cached.cachedAt)
+            await emitNotifications(for: envelope.attention)
         } catch let failure as EngineFailure {
             lastFailureText = failure.localizedDescription
+            diagnostics.recordFailure(failure.localizedDescription)
             if case let .incompatible(requested, supported, _) = failure {
                 connection = .incompatible(requested: requested, supported: supported)
             } else if case .unreachable = failure {
@@ -163,7 +196,23 @@ public final class AppModel: ObservableObject {
             // cachedOverview is untouched here.
         } catch {
             lastFailureText = "刷新失败：\(error)"
+            diagnostics.recordFailure("刷新失败：\(error)")
         }
+    }
+
+    /// Feed one round's attention facts through the notification policy
+    /// (design §4). The dedup state advances on EVERY round — including
+    /// rounds while notifications are disabled — so enabling them later
+    /// never bursts already-known anomalies. Posting happens only when
+    /// the user opted in AND the OS granted authorization.
+    private func emitNotifications(for attention: [AttentionItem]) async {
+        let emit = settings.notificationsEnabled
+            && notificationAuth == .granted
+            && notifier != nil
+        guard let payload = notificationPolicy.processRound(attention, emit: emit) else {
+            return
+        }
+        await notifier?.post(payload)
     }
 
     // MARK: - Auto refresh (panel-open tier, design §8: ~5s)
@@ -171,19 +220,107 @@ public final class AppModel: ObservableObject {
     /// While the panel is open the app holds a "panel-open" demand and
     /// re-reads the read model about every 5 seconds. This is a STATUS
     /// cadence — it does not mean token numbers change every 5 seconds.
-    public func startAutoRefresh(interval: TimeInterval = 5) {
+    /// The interval is the user's refresh preference (设置页), default 5s.
+    public func startAutoRefresh(interval: TimeInterval? = nil) {
         stopAutoRefresh()
+        let effective = interval ?? settings.panelRefreshInterval
         autoRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh(reason: "panel-open")
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(effective * 1_000_000_000))
             }
         }
+    }
+
+    /// Apply a changed refresh preference immediately when the panel's
+    /// auto-refresh loop is already running.
+    public func applyPanelRefreshPreference() {
+        guard autoRefreshTask != nil else { return }
+        startAutoRefresh()
     }
 
     public func stopAutoRefresh() {
         autoRefreshTask?.cancel()
         autoRefreshTask = nil
+    }
+
+    // MARK: - Sleep / wake (design §8: 睡眠期间不判定停摆，唤醒后重新同步)
+
+    /// The system woke from sleep: re-sync immediately with a dedicated
+    /// round. While asleep no round ran and no staleness was judged; the
+    /// just-woke gap is a RESYNC state, not a failure — until the first
+    /// successful round lands, the panel annotates the still-displayed
+    /// data as "正在重新同步" instead of treating its age as an anomaly.
+    public func handleWake() async {
+        wokeAt = Date()
+        await refresh(reason: "wake-resync")
+    }
+
+    /// True between wake and the first successful refresh after it.
+    public var isResyncingAfterWake: Bool {
+        guard let wokeAt else { return false }
+        if let ok = lastRefreshedAt, ok >= wokeAt { return false }
+        return true
+    }
+
+    // MARK: - Settings (design §8/§9: 设置页)
+
+    private func updateSettings(_ change: (inout AppSettings) -> Void) {
+        var next = settings
+        change(&next)
+        settingsStore?.save(next)
+        settings = next
+    }
+
+    /// Refresh-preference setter (panel-open interval, seconds).
+    public func setPanelRefreshInterval(_ interval: TimeInterval) {
+        updateSettings { $0.panelRefreshInterval = interval }
+        applyPanelRefreshPreference()
+    }
+
+    /// Explicit data-directory choice; nil restores the shared default.
+    /// Applies on the next app launch — never moves or copies data.
+    public func setDataDirectoryOverride(_ path: String?) {
+        let cleaned = path.map { $0.trimmingCharacters(in: .whitespaces) }
+        updateSettings { $0.dataDirectoryOverride = (cleaned?.isEmpty ?? true) ? nil : cleaned }
+    }
+
+    // MARK: - Notifications (design §4: 通知默认关闭，用户开启后再申请系统权限)
+
+    /// The user opted IN: this is the ONLY place authorization is
+    /// requested. A denial keeps notifications off (and the OS remembers
+    /// the denial; re-enabling then requires System Settings).
+    public func enableNotifications() async {
+        guard let notifier else { return }
+        let granted = await notifier.requestAuthorization()
+        notificationAuth = granted ? .granted : .denied
+        updateSettings { $0.notificationsEnabled = granted }
+    }
+
+    /// The user opted OUT: stop posting immediately. The OS permission
+    /// itself is left as-is (revoking it is the user's system choice).
+    public func disableNotifications() {
+        updateSettings { $0.notificationsEnabled = false }
+    }
+
+    /// Re-read the OS verdict (for the settings page display).
+    public func refreshNotificationAuthorization() async {
+        guard let notifier else { return }
+        notificationAuth = await notifier.systemAuthorizationStatus()
+    }
+
+    /// Whether the notification pipeline may currently post.
+    public var notificationsActive: Bool {
+        settings.notificationsEnabled && notificationAuth == .granted
+    }
+
+    // MARK: - Diagnostics (design §8: 引擎重复失败显示诊断入口)
+
+    /// The diagnostics entry point is offered when engine rounds fail
+    /// repeatedly OR the connection is fatally incompatible (both need
+    /// user action, and both keep the last successful data displayed).
+    public var showDiagnosticsEntry: Bool {
+        diagnostics.needsDiagnosticsEntry || connection.isFatal
     }
 
     /// App termination: release THIS client's collection demand only.

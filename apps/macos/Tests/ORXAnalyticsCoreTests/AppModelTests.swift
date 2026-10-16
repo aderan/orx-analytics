@@ -1,10 +1,32 @@
 import XCTest
 @testable import ORXAnalyticsCore
 
+/// Recording spy for the notification surface (CONTRIBUTING: 测试不弹
+/// 真实系统通知 — no UNUserNotificationCenter anywhere in tests).
+final class SpyNotifier: NotificationPosting {
+    var authorized: Bool
+    private(set) var authorizationRequests = 0
+    private(set) var posts: [AttentionNotification] = []
+
+    init(authorized: Bool = true) { self.authorized = authorized }
+
+    func systemAuthorizationStatus() async -> NotificationAuthState {
+        authorized ? .granted : .denied
+    }
+
+    func requestAuthorization() async -> Bool {
+        authorizationRequests += 1
+        return authorized
+    }
+
+    func post(_ notification: AttentionNotification) async {
+        posts.append(notification)
+    }
+}
+
 /// A controllable fake engine for AppModel tests: injectable latency,
 /// outcomes and errors. Never touches a real socket.
-final class FakeEngineClient: EngineClientProtocol {
-    var latency: TimeInterval = 0
+final class FakeEngineClient: EngineClientProtocol {    var latency: TimeInterval = 0
     var negotiateOutcome: NegotiationOutcome = .compatible(engineVersion: 1)
     var overviewEnvelope: OverviewEnvelope?
     var overviewError: EngineFailure?
@@ -243,5 +265,213 @@ final class AppModelTests: XCTestCase {
         model.clearDisplayCache()
         XCTAssertNil(model.cachedOverview)
         XCTAssertNil(cache.load())
+    }
+
+    // MARK: T011 — settings (design §8/§9)
+
+    func testSettingsDefaultToConservativeValuesWithoutStore() {
+        let model = AppModel(client: FakeEngineClient(),
+                             cache: OverviewCacheStore(directory: directory))
+        XCTAssertFalse(model.settings.notificationsEnabled,
+                       "通知默认关闭")
+        XCTAssertNil(model.settings.dataDirectoryOverride)
+        XCTAssertEqual(model.settings.panelRefreshInterval, 5)
+    }
+
+    func testSettingMutationsPersistThroughTheStore() {
+        let store = InMemoryAppSettingsStore()
+        let model = AppModel(client: FakeEngineClient(),
+                             cache: OverviewCacheStore(directory: directory),
+                             settingsStore: store)
+        model.setPanelRefreshInterval(30)
+        model.setDataDirectoryOverride("/tmp/custom-data")
+        let saved = store.load()
+        XCTAssertEqual(saved.panelRefreshInterval, 30)
+        XCTAssertEqual(saved.dataDirectoryOverride, "/tmp/custom-data")
+        XCTAssertEqual(saved.resolvedSocketPath(environment: [:]),
+                       "/tmp/custom-data/engine.sock")
+        // clearing the override restores the default resolution
+        model.setDataDirectoryOverride(nil)
+        XCTAssertNil(store.load().dataDirectoryOverride)
+    }
+
+    // MARK: T011 — notification enable/disable (permission only on opt-in)
+
+    func testEnableNotificationsRequiresAndRecordsAuthorization() async {
+        let denied = SpyNotifier(authorized: false)
+        let model = AppModel(client: FakeEngineClient(),
+                             cache: OverviewCacheStore(directory: directory),
+                             notifications: denied)
+        await model.enableNotifications()
+        XCTAssertEqual(denied.authorizationRequests, 1,
+                       "开启后才向系统申请权限")
+        XCTAssertFalse(model.settings.notificationsEnabled,
+                       "denied authorization keeps notifications off")
+        XCTAssertEqual(model.notificationAuth, .denied)
+
+        denied.authorized = true
+        await model.enableNotifications()
+        XCTAssertTrue(model.settings.notificationsEnabled)
+        XCTAssertEqual(model.notificationAuth, .granted)
+
+        model.disableNotifications()
+        XCTAssertFalse(model.settings.notificationsEnabled,
+                       "用户关闭后立即停用")
+    }
+
+    // MARK: T011 — notification emission (dedup / merge / recovery)
+
+    private func envelope(attention: [AttentionItem]) -> OverviewEnvelope {
+        OverviewEnvelope(
+            header: EngineEnvelopeHeader(op: "overview", ok: true,
+                                         protocolVersion: 1, generatedAt: nil,
+                                         error: nil),
+            summary: OverviewSummary(activeRuns: 0, attention: attention.count,
+                                     recentCompleted: 0),
+            active: [], attention: attention, recentCompleted: [],
+            projectHealth: [], snapshots: [:], warnings: [])
+    }
+
+    private func attention(_ ids: [Int], kind: String = "failed_task") -> [AttentionItem] {
+        ids.map { AttentionItem(kind: kind, project: "/tmp/p\($0)", runID: "R001",
+                                taskID: "T00\($0)", revisionID: 101, detail: "d\($0)") }
+    }
+
+    func testNotificationFlowBaselineDedupMergeRecovery() async {
+        let spy = SpyNotifier()
+        let fake = FakeEngineClient()
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory),
+                             notifications: spy)
+        await model.enableNotifications()
+        XCTAssertTrue(model.settings.notificationsEnabled)
+
+        // baseline: current anomalies are panel content, no burst
+        fake.overviewEnvelope = envelope(attention: attention([1]))
+        await model.refresh(reason: "manual")
+        XCTAssertEqual(spy.posts.count, 0)
+
+        // same anomaly persists — deduped
+        await model.refresh(reason: "manual")
+        XCTAssertEqual(spy.posts.count, 0, "相同异常去重")
+
+        // two NEW anomalies in one round — ONE merged notification
+        fake.overviewEnvelope = envelope(attention: attention([1, 2, 3]))
+        await model.refresh(reason: "manual")
+        XCTAssertEqual(spy.posts.count, 1, "同一轮多异常合并通知")
+        XCTAssertEqual(spy.posts[0].itemCount, 2)
+        XCTAssertEqual(spy.posts[0].project, "/tmp/p2")
+
+        // anomaly 1 recovered (gone), 2/3 persist — silent
+        fake.overviewEnvelope = envelope(attention: attention([2, 3]))
+        await model.refresh(reason: "manual")
+        XCTAssertEqual(spy.posts.count, 1, "恢复后不反复报警")
+
+        // anomaly 1 fails AGAIN — a fresh occurrence notifies once
+        fake.overviewEnvelope = envelope(attention: attention([1, 2, 3]))
+        await model.refresh(reason: "manual")
+        XCTAssertEqual(spy.posts.count, 2)
+        XCTAssertEqual(spy.posts[1].itemCount, 1)
+        XCTAssertEqual(spy.posts[1].project, "/tmp/p1")
+    }
+
+    func testNotificationsNeverFireWhileDisabledByDefault() async {
+        let spy = SpyNotifier()
+        let fake = FakeEngineClient()
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory),
+                             notifications: spy)
+        // never enabled: transitions across rounds post nothing
+        fake.overviewEnvelope = envelope(attention: attention([1]))
+        await model.refresh(reason: "manual")
+        fake.overviewEnvelope = envelope(attention: attention([1, 2]))
+        await model.refresh(reason: "manual")
+        fake.overviewEnvelope = envelope(attention: attention([]))
+        await model.refresh(reason: "manual")
+        fake.overviewEnvelope = envelope(attention: attention([1]))
+        await model.refresh(reason: "manual")
+        XCTAssertEqual(spy.posts.count, 0,
+                       "通知默认关闭 — no system notification without opt-in")
+        // and no permission request happened either
+        XCTAssertEqual(spy.authorizationRequests, 0)
+    }
+
+    func testLowConfidenceAttentionNeverEmitsNotification() async {
+        let spy = SpyNotifier()
+        let fake = FakeEngineClient()
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory),
+                             notifications: spy)
+        await model.enableNotifications()
+        fake.overviewEnvelope = envelope(attention: attention([1]))   // baseline
+        await model.refresh(reason: "manual")
+        fake.overviewEnvelope = envelope(
+            attention: attention([1], kind: "stall_suspected") + attention([2]))
+        await model.refresh(reason: "manual")
+        XCTAssertEqual(spy.posts.count, 1, "only the fact-based item notifies")
+        XCTAssertEqual(spy.posts[0].itemCount, 1)
+        XCTAssertEqual(spy.posts[0].project, "/tmp/p2")
+    }
+
+    // MARK: T011 — diagnostics entry on repeated engine failure
+
+    func testRepeatedEngineFailuresOpenDiagnosticsEntryAndKeepOldData() async {
+        let cache = seedCache(active: 7, attention: 0)
+        let fake = FakeEngineClient()
+        fake.overviewEnvelope = FakeEngineClient.fixture(activeRuns: 7, attention: 0)
+        let model = AppModel(client: fake, cache: cache)
+        model.bootstrap()
+        await model.refresh(reason: "panel-open")
+        XCTAssertNotNil(model.diagnostics.lastSuccessAt)
+
+        fake.overviewError = .unreachable("engine died")
+        for _ in 0..<3 { await model.refresh(reason: "panel-open") }
+        XCTAssertTrue(model.showDiagnosticsEntry,
+                      "引擎重复失败显示诊断入口")
+        XCTAssertEqual(model.diagnostics.consecutiveFailures, 3)
+        XCTAssertNotNil(model.diagnostics.lastFailureText)
+        XCTAssertNotNil(model.diagnostics.lastSuccessAt,
+                        "旧数据时间 retained alongside the failure reason")
+        XCTAssertEqual(model.activeRunCount, 7,
+                       "单源失败不拖垮整体 — last successful data still displayed")
+
+        fake.overviewError = nil
+        await model.refresh(reason: "manual")
+        XCTAssertFalse(model.showDiagnosticsEntry)
+        XCTAssertEqual(model.diagnostics.consecutiveFailures, 0)
+    }
+
+    // MARK: T011 — sleep/wake resync (§8: 睡眠期间不判定停摆，唤醒后重新同步)
+
+    func testWakeIssuesResyncRoundAndClearsFlagAfterSuccess() async {
+        let fake = FakeEngineClient()
+        fake.overviewEnvelope = FakeEngineClient.fixture(activeRuns: 1, attention: 0)
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory))
+        await model.handleWake()
+        XCTAssertTrue(fake.refreshReasons.contains("wake-resync"),
+                      "唤醒后重新同步 issues a dedicated refresh round")
+        XCTAssertFalse(model.isResyncingAfterWake,
+                       "a successful round after wake clears the resync state")
+    }
+
+    func testWakeWithFailingEngineKeepsOldDataMarkedAsResyncing() async {
+        let cache = seedCache(active: 7, attention: 0)
+        let fake = FakeEngineClient()
+        fake.overviewError = .unreachable("asleep engine")
+        let model = AppModel(client: fake, cache: cache)
+        model.bootstrap()
+        await model.refresh(reason: "panel-open")
+        await model.handleWake()
+        XCTAssertTrue(model.isResyncingAfterWake,
+                      "resync state stays until the first success lands")
+        XCTAssertEqual(model.activeRunCount, 7,
+                       "旧数据 continues to display, annotated as resyncing")
+    }
+
+    func testIsResyncingAfterWakeFalseBeforeAnyWake() {
+        let model = AppModel(client: FakeEngineClient(),
+                             cache: OverviewCacheStore(directory: directory))
+        XCTAssertFalse(model.isResyncingAfterWake)
     }
 }

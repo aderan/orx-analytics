@@ -327,6 +327,14 @@ public struct OverviewSummary: Codable, Equatable {
     public let recentCompleted: Int
     public let projects: ProjectsCountBlock?
 
+    public init(activeRuns: Int, attention: Int, recentCompleted: Int,
+                projects: ProjectsCountBlock? = nil) {
+        self.activeRuns = activeRuns
+        self.attention = attention
+        self.recentCompleted = recentCompleted
+        self.projects = projects
+    }
+
     enum CodingKeys: String, CodingKey {
         case attention, projects
         case activeRuns = "active_runs"

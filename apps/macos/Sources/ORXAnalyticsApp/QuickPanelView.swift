@@ -111,8 +111,32 @@ struct QuickPanelView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // 睡眠唤醒后的重新同步状态：旧数据继续显示，标注为重新同步
+        // 而不是异常（design §8: 睡眠期间不判定停摆）。
+        if model.isResyncingAfterWake {
+            Label("刚从睡眠唤醒，正在重新同步…", systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
         if let failure = model.lastFailureText {
             Text(failure).font(.caption2).foregroundStyle(.secondary)
+        }
+        diagnosticsEntry
+    }
+
+    /// 引擎重复失败显示诊断入口 (design §8). Ordinary failures are
+    /// shown as text; the ENTRY appears only when failures repeat or the
+    /// protocol is fatally incompatible — with or without cached data.
+    @ViewBuilder
+    private var diagnosticsEntry: some View {
+        if model.showDiagnosticsEntry {
+            Button {
+                openWindow(id: "diagnostics")
+            } label: {
+                Label("引擎连续失败——打开诊断…", systemImage: "stethoscope")
+                    .font(.caption)
+            }
+            .buttonStyle(.link)
         }
     }
 
