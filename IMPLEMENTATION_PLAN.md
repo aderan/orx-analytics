@@ -59,4 +59,12 @@
 - 可验证结果：干净 Mac 双击可用；升级保留数据；全部验收证据与已知限制
   一并交付；IMPLEMENTATION_PLAN.md 收口移除。
 - 测试：build_app.sh、两仓全量、agent 独立终审。
-- 状态：未开始。
+- 状态：T012 已完成——scripts/build_app.sh（内置 python-build-standalone
+  cpython-3.12.8+20250115，SHA256 每次校验；产出 .app＋DMG/zip；dev/dist
+  以名称与 Bundle ID 区分；arm64、最低 macOS 13；ad-hoc 签名如实标注）；
+  App 端引擎生命周期管理（EngineProcessManager：内置运行时解析、升级先
+  备份再放行、有界拉起；127 XCTest 绿）；docs/app-installation.md（安装/
+  升级备份/回退拒绝/卸载不删数据/清缓存独立/签名公证列为已知限制）。
+  发现并绕过的 src/ 缺陷：`python -m orxanalytics.engine` 不绑定 socket，
+  包内 orx_engine_serve.py 以公开引擎 API 组合服务，src/ 修复列后续任务。
+  T013（终审）未开始。

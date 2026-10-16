@@ -474,4 +474,72 @@ final class AppModelTests: XCTestCase {
                              cache: OverviewCacheStore(directory: directory))
         XCTAssertFalse(model.isResyncingAfterWake)
     }
+
+    // MARK: engine lifecycle (T012: 引擎由 App 启动管理)
+
+    private final class RecordingLauncher: EngineProcessManaging {
+        var ensureCalls: [(socketPath: String, dataDir: String)] = []
+        var outcome: EngineEnsureOutcome = .started
+        var onEnsure: (() -> Void)?
+        func ensureRunning(socketPath: String, dataDir: String) async -> EngineEnsureOutcome {
+            ensureCalls.append((socketPath, dataDir))
+            onEnsure?()
+            return outcome
+        }
+    }
+
+    func testRefreshLaunchesEngineWhenNotRunningThenRetriesNegotiation() async {
+        let fake = FakeEngineClient()
+        fake.negotiateOutcome = .engineNotRunning
+        fake.overviewEnvelope = FakeEngineClient.fixture(activeRuns: 1, attention: 0)
+        let launcher = RecordingLauncher()
+        // Once the launcher "started" the engine, negotiation succeeds —
+        // exactly the wiring the real manager provides.
+        launcher.onEnsure = { fake.negotiateOutcome = .compatible(engineVersion: 1) }
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory),
+                             engineLauncher: launcher)
+        await model.refresh(reason: "panel-open")
+
+        XCTAssertEqual(launcher.ensureCalls.count, 1)
+        XCTAssertEqual(fake.negotiateCount, 2)   // first notRunning, then retry
+        guard case let .ready(version) = model.connection else {
+            return XCTFail("expected ready, got \(model.connection)")
+        }
+        XCTAssertEqual(version, 1)
+        XCTAssertEqual(model.cachedOverview?.envelope.summary.activeRuns, 1)
+    }
+
+    func testRefreshWithoutLauncherKeepsNotRunningState() async {
+        let fake = FakeEngineClient()
+        fake.negotiateOutcome = .engineNotRunning
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory))
+        await model.refresh(reason: "panel-open")
+        guard case .notRunning = model.connection else {
+            return XCTFail("expected notRunning, got \(model.connection)")
+        }
+        XCTAssertEqual(fake.negotiateCount, 1)
+    }
+
+    func testRefreshRecordsLauncherFailuresIntoDiagnostics() async {
+        let fake = FakeEngineClient()
+        fake.negotiateOutcome = .engineNotRunning
+        let launcher = RecordingLauncher()
+        launcher.outcome = .failed("升级备份失败，已拒绝启动新引擎")
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory),
+                             engineLauncher: launcher)
+        await model.refresh(reason: "panel-open")
+        XCTAssertEqual(model.lastFailureText, "升级备份失败，已拒绝启动新引擎")
+        guard case .notRunning = model.connection else {
+            return XCTFail("expected notRunning, got \(model.connection)")
+        }
+        // One failure records the reason; the diagnostics ENTRY appears
+        // only once failures repeat (design §8: 引擎重复失败显示诊断入口).
+        XCTAssertFalse(model.showDiagnosticsEntry)
+        await model.refresh(reason: "panel-open")
+        await model.refresh(reason: "panel-open")
+        XCTAssertTrue(model.showDiagnosticsEntry)
+    }
 }

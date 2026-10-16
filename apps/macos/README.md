@@ -11,17 +11,31 @@ SwiftUI `MenuBarExtra` 常驻入口（图标 + 进行中 Run 数徽标）、`LSU
 swift build                 # 或 ../../scripts/build_macos_app.sh
 swift test                  # 协议客户端、缓存、缓存优先、口径规则、详情模型单测
 ../../scripts/smoke_macos_app.sh   # 构建后以 --smoke-test 自检并退出
+../../scripts/build_app.sh dev     # 可安装 Dev 版 .app + zip（内置 Python 运行时）
+../../scripts/build_app.sh dist    # 正式分发 .app + DMG
 ```
 
-最低 macOS 13（`Package.swift` platforms）；Apple Silicon 优先。
+最低 macOS 13（`Package.swift` platforms）；Apple Silicon。可安装包的
+构建、内置运行时固定版本与校验和、dev/dist 区分、安装升级回退说明见
+[docs/app-installation.md](../../docs/app-installation.md)（Stage 5 / T012）。
+
+## 引擎由 App 启动管理（设计 §9）
+
+App 是引擎的生命周期管理者：socket 无应答时用包内固定版 Python 运行时
+启动 `Resources/orx_engine_serve.py`（单实例锁 → 用户私有 socket → 有界
+重启的调度器），就绪后重试连接；协议不兼容只报告不接管。启动前若检测到
+analytics.db 需要跨版本打开，先备份再放行（升级保护）。引擎进程不随 App
+退出而被杀——CLI watcher 的需求必须存活（§7）。`swift run` 无内置运行时，
+开发替代见 app-installation.md「开发运行」。
 
 ## 结构
 
 | 位置 | 职责 |
 |---|---|
-| `Sources/ORXAnalyticsCore` | 引擎 socket 客户端（overview / runs.get / tasks.get / refresh.request、版本协商、不兼容明确报告）、overview 与详情负载模型（对齐 Python 线格式）、缓存优先存储、AppModel、RunDetailModel、面板三区合并、口径与维度展示规则 |
+| `Sources/ORXAnalyticsCore` | 引擎 socket 客户端（overview / runs.get / tasks.get / refresh.request、版本协商、不兼容明确报告）、overview 与详情负载模型（对齐 Python 线格式）、缓存优先存储、AppModel、RunDetailModel、面板三区合并、口径与维度展示规则、引擎进程管理（内置运行时解析、升级备份守卫、有界拉起） |
 | `Sources/ORXAnalyticsApp` | SwiftUI 应用：MenuBarExtra 快速面板三区（需要关注/进行中/最近完成，同一 Run 只出现一次、异常优先）、执行详情窗口四区（执行概况/任务列表/消耗分析/尝试与证据，Revision 默认收起）、设置（骨架）、`--smoke-test` 自检 |
 | `Resources/Info.plist` | `LSUIElement` 等应用元数据；SwiftPM 构建时嵌入 `__TEXT,__info_plist`，Stage 5 打 `.app` 包时复用 |
+| `Resources/orx_engine_serve.py` | 引擎服务入口（App 拉起）：acquire → start_server → EngineSupervisor；包内分析代码由构建脚本放入 Resources |
 | `Tests/ORXAnalyticsCoreTests` | 合成来源单测（EngineSimulator，不连真实引擎、不读真实会话） |
 
 ## 契约要点（实现必须遵守）

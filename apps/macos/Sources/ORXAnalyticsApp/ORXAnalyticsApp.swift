@@ -15,11 +15,21 @@ private enum AppRuntime {
         // default home (design §8).
         let initial = settingsStore.load()
         let client = EngineSocketClient(socketPath: initial.resolvedSocketPath())
+        // The app launches and manages the engine through the bundled
+        // standalone Python runtime (design §9); in `swift run` without
+        // a bundle the documented dev override env vars apply.
+        let launcher = EngineProcessManager(bundleURL: Bundle.main.bundleURL)
         let model = AppModel(client: client,
                              cache: OverviewCacheStore.makeDefault(),
                              settingsStore: settingsStore,
-                             notifications: SystemNotificationCenter())
+                             notifications: SystemNotificationCenter(),
+                             engineLauncher: launcher)
         RuntimeCoordinator.shared.start(model: model)
+        // App start (not just the first panel open) ensures the engine
+        // and primes the menu-bar badge. Still cache-first: nothing
+        // waits for this round; the panel renders cache whenever it
+        // opens (design §3/§9).
+        Task { await model.refresh(reason: "app-start") }
         return model
     }()
 }

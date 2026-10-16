@@ -4,6 +4,10 @@ orx-analytics 是 Python 3.11+ 的独立 CLI，运行时只使用标准库。
 安装 Git 来源需要 Git 和网络；构建时会下载 setuptools 等构建依赖。
 安装完成后的分析不需要联网，也不需要安装 ORX。
 
+macOS 菜单栏应用（自带内置 Python 运行时的可安装 `ORX Analytics.app`）
+的安装、升级、回退与卸载是独立流程，见
+[app-installation.md](app-installation.md)。
+
 当前包版本为 0.4.1，分发来源是本 GitHub 仓库。以下 `@main` 指主分支
 最新提交；需要可复现安装时用完整 commit SHA 替换 `main`。尚未发布到
 PyPI，不使用裸 `pip install orx-analytics` 作为本项目的安装方式。

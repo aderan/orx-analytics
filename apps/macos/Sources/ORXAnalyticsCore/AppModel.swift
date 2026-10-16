@@ -52,6 +52,10 @@ public final class AppModel: ObservableObject {
 
     public let client: EngineClientProtocol
     public let cache: OverviewCacheStore
+    /// Engine lifecycle owner (design §9: 引擎由 App 启动管理). nil in
+    /// tests and the smoke self-check — those use simulators, never a
+    /// real engine process.
+    public let engineLauncher: EngineProcessManaging?
     /// Where preferences persist (nil = in-memory defaults).
     public let settingsStore: AppSettingsStore?
     /// The history query window's model. Owned here (not per-view) so
@@ -68,10 +72,12 @@ public final class AppModel: ObservableObject {
 
     public init(client: EngineClientProtocol, cache: OverviewCacheStore,
                 settingsStore: AppSettingsStore? = nil,
-                notifications: NotificationPosting? = nil) {
+                notifications: NotificationPosting? = nil,
+                engineLauncher: EngineProcessManaging? = nil) {
         self.client = client
         self.cache = cache
         self.settingsStore = settingsStore
+        self.engineLauncher = engineLauncher
         self.notifier = notifications
         self.historyModel = HistoryModel(client: client)
         if let settingsStore {
@@ -149,7 +155,25 @@ public final class AppModel: ObservableObject {
         defer { isRefreshing = false }
         connection = .connecting
 
-        let outcome = await client.negotiateAsync()
+        var outcome = await client.negotiateAsync()
+        var launchFailure: String?
+        if case .engineNotRunning = outcome, let launcher = engineLauncher {
+            // The app owns the engine's lifecycle for its data dir
+            // (design §9): launch the bundled runtime's engine, then
+            // retry the negotiation once against it. Other outcomes
+            // (incompatible) are never retried into a takeover.
+            let ensure = await launcher.ensureRunning(
+                socketPath: settings.resolvedSocketPath(),
+                dataDir: settings.resolvedDataDirectory())
+            switch ensure {
+            case .started:
+                outcome = await client.negotiateAsync()
+            case let .failed(reason), let .unavailable(reason):
+                launchFailure = reason
+            case .alreadyRunning, .backingOff:
+                break   // probe raced or a recent attempt died; reported below
+            }
+        }
         switch outcome {
         case let .compatible(engineVersion):
             connection = .ready(engineVersion: engineVersion)
@@ -163,11 +187,15 @@ public final class AppModel: ObservableObject {
             diagnostics.recordFailure(lastFailureText ?? "协议不兼容")
             return
         case .engineNotRunning:
-            connection = .notRunning("引擎未运行（socket 无监听）。缓存数据继续展示。")
-            lastFailureText = nil    // not an error worth alarming about
+            // A launch attempt that failed for a concrete reason (e.g.
+            // the upgrade backup) is worth reporting verbatim; a plain
+            // absent engine is not an error worth alarming about.
+            connection = .notRunning(launchFailure
+                ?? "引擎未运行（socket 无监听）。缓存数据继续展示。")
+            lastFailureText = launchFailure
             // Still counted for diagnostics: a repeatedly absent engine
             // deserves the diagnostics entry (with 旧数据时间) too.
-            diagnostics.recordFailure("引擎未运行（socket 无监听）")
+            diagnostics.recordFailure(launchFailure ?? "引擎未运行（socket 无监听）")
             return
         }
 
