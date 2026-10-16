@@ -27,7 +27,9 @@
   本仓 tests/test_discovery.py、tests/test_engine.py、
   tests/test_watch_engine.py + 全量回归。
 - 状态：进行中（T004 已完成：ORX 仓 c96ed8b 索引写侧 + 本仓 0bdd02b
-  消费契约；T005–T007 未开始）。
+  消费契约；T005 已完成：本仓发现层 discovery.py＋tests/test_discovery.py
+  ＋`discover` CLI（三来源合并去重、有界扫描、健康隔离、显式 relocate）；
+  T006–T007 未开始）。
 
 ## Stage 3 原生菜单栏闭环（T008–T009）
 

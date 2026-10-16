@@ -108,3 +108,35 @@ ORX_DATA_DIR > XDG_DATA_HOME/orx > ~/.local/share/orx
   不可读），不影响 registry 已登记项目的采集。
 - 索引登记失败在 ORX 侧只留记录、绝不阻塞执行；因此消费方不能假设
   索引完备——项目在索引缺失而 registry 在册时以 registry 为准。
+
+## 发现层如何消费这些来源
+
+`orx-analytics discover` 合并三个来源，键一律是 canonical path
+（`Path(...).expanduser().resolve()`）：
+
+1. ORX 项目索引（只读，规则见上一节）；
+2. 本仓 registry（`projects add` 的手动登记也在其中）；
+3. 用户指定工作目录的有界扫描（`--scan ROOT`，可重复）。
+
+合并与呈现规则：
+
+- 同名目录不合并；项目移动通过显式 `relocate_project`（Python API）
+  重新关联历史，绝不凭目录名自动认定。
+- 索引缺失（旧版 ORX）时降级提示“自动发现范围受限”，registry 与扫描
+  来源不受影响；索引损坏或 `index_version` 不认识时只隔离索引来源。
+- 项目删除、目录不可读或 `.orx/state.db` 无法打开时保留历史快照，
+  数据健康显示“来源不可读”；schema 版本不在白名单
+  （`probe.SUPPORTED_ORX_SCHEMA`，当前 {8..12}）时显示“版本不支持”，
+  均不崩溃、不清历史。
+- `discover` 本身只读；`--register` 才把未登记的发现结果显式写入
+  registry（等价于逐个 `projects add`）。
+
+有界扫描的边界（`discovery.scan_for_projects`）：
+
+- 深度上限（默认 4 级）与目录预算（默认 5000 个）双限制，超出即停止
+  并报告 `truncated`；不做全盘扫描，不扫描未指定的根。
+- 剪掉依赖与产物目录（`node_modules`、`.venv`/`venv`、`__pycache__`、
+  `target`、`build`、`dist`、`Pods`、`DerivedData` 等）与 `.git` 整体，
+  不进入其内部。
+- 目录符号链接一律不跟随：符号链接循环不可能发生，扫描也不会经链接
+  逃出指定根。

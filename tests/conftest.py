@@ -441,6 +441,13 @@ def _notifications_off_by_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_orx_index(monkeypatch, tmp_path):
+    """Discovery's default index location must never read the developer's
+    real ORX projects-index.json; resolve it into this test's tmp dir."""
+    monkeypatch.setenv("ORX_DATA_DIR", str(tmp_path / "orx-data"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_default_collection(monkeypatch, tmp_path):
     """A watch round must not import the developer's real session history.
 

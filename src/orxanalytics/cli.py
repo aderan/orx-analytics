@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import __version__, metrics, probe
+from . import __version__, discovery, metrics, probe
 from .store import Store, DEFAULT_DATA_DIR
 
 
@@ -37,6 +37,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("action", choices=["add", "remove", "list"])
     p.add_argument("root", nargs="?")
     p.add_argument("--name")
+
+    p = sub.add_parser(
+        "discover", help="merge ORX index, registry and a bounded scan")
+    p.add_argument("--index", default=None, metavar="PATH",
+                   help="projects-index.json to consume (default: ORX "
+                        "data-dir resolution)")
+    p.add_argument("--scan", action="append", default=[], metavar="ROOT",
+                   help="working directory to bounded-scan (repeatable)")
+    p.add_argument("--max-depth", type=int,
+                   default=discovery.DEFAULT_MAX_DEPTH,
+                   help="scan depth below each root (default %(default)s)")
+    p.add_argument("--register", action="store_true",
+                   help="explicitly register discovered projects that are "
+                        "not registered yet")
+    p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("collect", help="one incremental read-only pass")
     p.add_argument("--project", action="append", default=[],
@@ -112,6 +127,40 @@ def main(argv: list[str] | None = None) -> int:
                           f"orx={r['orx_enabled']}")
         finally:
             store.close()
+        return 0
+
+    if args.cmd == "discover":
+        store = _store(args)
+        try:
+            res = discovery.discover(
+                store, index_file=args.index, scan_roots=args.scan or None,
+                max_depth=args.max_depth)
+            if args.register and res["new_projects"]:
+                res["registered"] = discovery.register_discovered(
+                    store, res["new_projects"])
+        finally:
+            store.close()
+        if args.json:
+            print(json.dumps(res, indent=1, ensure_ascii=False,
+                             default=str))
+        else:
+            ix = res["index"]
+            print(f"index: {ix['status']} {ix['detail']}")
+            for n in res["notices"]:
+                print(f"notice: {n}")
+            if res["scan"]:
+                s = res["scan"]
+                tail = " (truncated: scan budget reached)" if s["truncated"] \
+                    else ""
+                print(f"scan: {len(s['projects'])} project(s) in "
+                      f"{s['scanned_dirs']} dir(s){tail}")
+            for p in res["projects"]:
+                print(f"{p['project']}\t{p['name']}\t"
+                      f"sources={','.join(p['sources'])}\t"
+                      f"{p['data_health']['health']}")
+            for r in res.get("registered", []):
+                print(f"registered {r['project']} "
+                      f"(action={r['action']})")
         return 0
 
     if args.cmd == "collect":
