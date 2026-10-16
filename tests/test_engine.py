@@ -636,3 +636,39 @@ def test_engine_start_serves_and_shuts_down_cleanly(home, proj):
     e2 = eng.Engine(home, clock=FakeClock())
     e2.acquire()
     e2.release()
+
+
+# ============================================================ module entry ===
+
+def test_module_entry_serves_the_socket_subprocess(home, proj):
+    """``python -m orxanalytics.engine`` must serve the socket, not just
+    run the scheduler — this is the real spawn path of ``watch start``
+    and of a bundle-less install. Regression: main() used to acquire and
+    loop without ever binding the socket (surfaced by T012 packaging)."""
+    import subprocess
+    import sys
+    import time as _time
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "orxanalytics.engine", "--data-dir", str(home)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        path = eng.socket_path(home)
+        deadline = _time.time() + 20
+        while not path.exists() and _time.time() < deadline:
+            assert proc.poll() is None, "engine subprocess exited early"
+            _time.sleep(0.1)
+        assert path.exists(), "engine.sock never bound by the module entry"
+        client = eng.EngineClient(path)
+        try:
+            resp = client.request({"op": "health"})
+            assert resp["ok"] is True
+            assert resp["protocol_version"] == query_model.PROTOCOL_VERSION
+        finally:
+            client.close()
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=10)

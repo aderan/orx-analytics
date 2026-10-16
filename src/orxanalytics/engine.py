@@ -1036,13 +1036,23 @@ class EngineClient:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the supervised engine as a standalone process (``python -m
-    orxanalytics.engine [--data-dir DIR]``) — the entry the app launches."""
+    orxanalytics.engine [--data-dir DIR]``) — the entry the app and
+    ``watch start`` launch. Full service: lock + socket server + the
+    supervised scheduler loop (regression: this entry used to acquire and
+    run the scheduler without ever binding the socket)."""
     import argparse
     ap = argparse.ArgumentParser(prog="orx-analytics-engine")
     ap.add_argument("--data-dir", default=None)
     args = ap.parse_args(argv)
     data_dir = Path(args.data_dir) if args.data_dir else Store().data_dir
-    sup = EngineSupervisor(lambda: Engine(data_dir).acquire(),
+
+    def make_engine() -> Engine:
+        engine = Engine(data_dir)
+        engine.acquire()
+        engine.start_server()   # the socket must be live before run()
+        return engine
+
+    sup = EngineSupervisor(make_engine,
                            state_dir=data_dir)
     report = sup.run()
     print(json.dumps(report, indent=1, default=str))
