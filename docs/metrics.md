@@ -86,3 +86,73 @@ revision 并账）列出终态；`passed/terminal` 为该 revision 内比值，�
 - **attempt 可归属量**仅当关联依据能定位 attempt 窗口（起止 turn 或时间窗）
   时计算，并把窗口外用量列为 `unattributed_within_session`。依据不足时只报
   会话总量并注明不可拆分，不按时间邻近猜测。
+
+## 任务/Run 用量归属读取模型（G002 T002 新增，2026-10-16）
+
+本节为**新增**口径，不改动上文任何冻结读数。实现以
+`src/orxanalytics/usage_readmodel.py` 为准（只读，仅 SELECT），回归测试
+`tests/test_usage_readmodel.py`。面向菜单栏应用的"这个任务/这次执行花了
+多少"，与六读数并列。总原则（未知保持未知、覆盖率与准确度分离、口径可
+复算、不计费、字段原语义）同样约束本节。
+
+### 归属账本
+
+- **Task 消耗**＝`(run_id, revision_id, task_id)` 全部可归属 attempt 之和：
+  worker 含失败与重试轮；可明确关联的 verifier 计入任务并单列
+  （`books.verifier`）；其他角色挂任务时按角色名列出但**不计入**任务总额，
+  直到契约命名它。
+- **planner** 归 Run 规划开销：仅凭 `attempts.run_id` 归属（`revision_id`
+  为 NULL 仍正确入账），`revision_ids` 如实携带 NULL。
+- **controller**：ORX 已记录（attempt 行 `role='controller'`）才进 ORX
+  口径的 `books.controller`；会话侧推导的 controller 自身消耗只存在于
+  原生预览口径（见下），绝不混入 ORX 总额。
+- **未归属**：`run_id` 已知但无法归属到任务或已命名角色的进
+  `unattributed_within_run`；`run_id` 未知或 observation 无 attempt 关联的
+  进 `project_unattributed`。一律**绝不**按任务数、attempt 数或时间摊分；
+  短编号（T001）不是身份，不得把未归属行挂到任何任务。
+- **Run 汇总覆盖全部 revision**（按 `attempts.run_id`），重规划不丢旧版本
+  消耗；`per_revision` 逐版本给出 token 与覆盖，无观测版本保持 None。
+
+### 规范观测与汇总附注
+
+- 每 attempt 取一条规范观测（`native_cli > zcode_db > host_report >
+  output_estimate`，同级最小 id），与第 2 读数同一规则、同一实现；不同
+  来源是同一工作的重复视角，**不相加**。
+- 每个汇总（task/run/各账本/未归属）携带：`coverage`
+  （`observed/attempts`＋`missing_recorded/unassessed`）、`missing_fields`
+  （逐字段 NULL 计数）、`accuracy`（canonical 行 `exact/estimated/unknown`
+  分布；accuracy 为 NULL 或无法识别计 `unknown`）、`as_of`
+  （`orx_snapshots.taken_at`）。
+- 完全未知为 `None` 不补零：某字段在汇总范围内无任何非 NULL 观测即为
+  `None`；仅当来源明确记录为零（存储 0）才出现 `0`。部分已知是带缺失
+  计数的部分和（`partial` 语义由缺失计数表达）。
+
+### 两口径结构分离
+
+- `orx_recorded`：上述全部，仅来自 `orx_usage_obs` 的规范观测。
+- `native_session_preview`：原生会话预览——关联会话/线程的当前累计量，
+  仅来自会话镜像（`zc_*`/`cx_*`）。树内按 id 去重、父子不重复计数；
+  union 对全部关联树每会话只计一次；**不同树相交**（一 attempt 的祖先是
+  另一 attempt 的会话）列为 `subtree_conflicts`；同一棵树承载多 attempt
+  是已知多 attempt 会话情形，列为 `shared_session_trees`，绝不逐 attempt
+  相加树总量。controller 会话（有已关联子会话且自身未关联的根会话）报
+  **自身**用量，子代理后代属于各自 attempt 的账；仅当全部子会话的
+  attempt 同属一个 run 时 `run_attribution.attributed=true`。
+- 两口径各自携带 `caliber` 标记，预览结果**顶层不出现任何 token 数**
+  （只在具名会话/条目内），任何接口都不返回两口径的合并数。
+
+### 标准化处理量 normalized_processing（版本 1）
+
+独立、有版本（`NORMALIZED_PROCESSING_VERSION`）的派生指标，仅用于比较
+工作量，**不是计费**；原始 token 求和保持来源语义、保持权威。按 attempt
+的 harness 缓存语义（ORX observability contract）逐 canonical 行派生：
+
+| 语义 | harness | 派生 |
+|---|---|---|
+| cache subset | zcode、codex | `input + output`（再加 cached 会重复计数） |
+| cache separate | cursor | `input + cached + output`（cached NULL 时为明确部分和并置 partial） |
+| 语义未知 | 其他/缺失 | 该行不派生，计入 `rows_missing` |
+
+操作数缺失的行为 NULL 不补零；`value` 为部分和（`partial=true` 或
+`rows_missing>0` 时必须伴随缺失计数发布）；汇总同时给出
+`cache_semantics` 三类行数分布。升级语义需递增版本号并补回归测试。
