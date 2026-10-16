@@ -81,6 +81,63 @@ final class PythonWireContractTests: XCTestCase {
         XCTAssertTrue(envelope.found, "same run_id in another project is a DIFFERENT run")
     }
 
+    /// T010 history query: the REAL runs.list payload decodes — query
+    /// echo with the frozen secondary key, page meta, and rows whose
+    /// consumption (all-revision totals) and coverage decode together.
+    /// Unknown consumption stays nil (never zero-filled) and still
+    /// renders its coverage line.
+    func testRunsListFromPythonLayerDecodesWithCoverage() throws {
+        guard Self.fixtureDir != nil else {
+            throw XCTSkip("ORX_WIRE_FIXTURES not set")
+        }
+        let envelope = try JSONDecoder().decode(RunsListEnvelope.self,
+                                                from: load("runs_list.json"))
+        XCTAssertEqual(envelope.header.op, "runs.list")
+        XCTAssertEqual(envelope.query?.filters?["status"], "done")
+        XCTAssertEqual(envelope.query?.sort?.key, "observed_tokens")
+        XCTAssertEqual(envelope.query?.sort?.secondary,
+                       "identity(project, run_id)")
+        XCTAssertFalse(envelope.runs.isEmpty)
+        XCTAssertGreaterThan(envelope.page?.totalMatched ?? 0, 0)
+        for run in envelope.runs {
+            XCTAssertEqual(run.status.raw, "done")
+            // 消耗排序同时展示覆盖程度：every row can render both
+            let row = HistoryRunRow.build(run, sortKey: "observed_tokens")
+            XCTAssertFalse(row.coverageText.isEmpty)
+            if row.consumptionKnown {
+                XCTAssertNotNil(run.consumption?.coverage)
+            }
+        }
+
+        // page 2 of the SAME query: offset echoed, identity key keeps
+        // the overlap consistent
+        let page2 = try JSONDecoder().decode(RunsListEnvelope.self,
+                                             from: load("runs_list_page2.json"))
+        XCTAssertEqual(page2.page?.offset, 1)
+        let page1IDs = Set(envelope.runs.map(\.id))
+        for run in page2.runs where page1IDs.contains(run.id) {
+            let first = envelope.runs.first { $0.id == run.id }
+            XCTAssertEqual(first?.consumption?.observedTotal,
+                           run.consumption?.observedTotal,
+                           "同一执行的消耗在两页一致（稳定身份键）")
+        }
+
+        // unfiltered consumption sort includes unknown-consumption runs
+        // (engine sorts them last); they decode nil totals WITH coverage
+        let all = try JSONDecoder().decode(RunsListEnvelope.self,
+                                           from: load("runs_list_all.json"))
+        let unknowns = all.runs.filter { $0.consumption?.observedTotal == nil }
+        XCTAssertFalse(unknowns.isEmpty,
+                       "未过滤的消耗排序必须包含用量未知的执行（排在最后）")
+        for run in unknowns {
+            XCTAssertNil(run.consumption?.tokens?.inputTokens,
+                         "未知不得补零")
+            let row = HistoryRunRow.build(run, sortKey: "observed_tokens")
+            XCTAssertNotNil(row.unknownNote,
+                            "缺数据行必须带“不表示最省”的说明")
+        }
+    }
+
     func testTasksGetFromPythonLayerDecodesEvidence() throws {
         guard Self.fixtureDir != nil else {
             throw XCTSkip("ORX_WIRE_FIXTURES not set")

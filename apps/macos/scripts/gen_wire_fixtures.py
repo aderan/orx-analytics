@@ -97,6 +97,23 @@ def main() -> int:
         # a run with only base rows (cross-project identity)
         dump("runs_get_b",
              query_model.runs_get(store, world["proj_b"], "R001"))
+        # history query (T010): consumption sort over ALL revisions with
+        # project + status filters; page 2 of the same query proves the
+        # offset echo and the stable identity secondary key
+        dump("runs_list",
+             query_model.runs_list(store, project=world["proj_a"],
+                                   status="done", sort="observed_tokens",
+                                   order="desc", limit=3))
+        dump("runs_list_page2",
+             query_model.runs_list(store, project=world["proj_a"],
+                                   status="done", sort="observed_tokens",
+                                   order="desc", limit=3, offset=1))
+        # unfiltered consumption sort: includes unknown-consumption runs
+        # (engine sorts them LAST) so the Swift side must decode nil
+        # totals with their coverage blocks
+        dump("runs_list_all",
+             query_model.runs_list(store, sort="observed_tokens",
+                                   order="desc", limit=10))
         # the retry/verifier task: pick the first failed task of the
         # first revision (ids are snapshot row ids, not revision numbers)
         target = next((t for t in run_resp["tasks"]

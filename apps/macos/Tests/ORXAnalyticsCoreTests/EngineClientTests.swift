@@ -193,6 +193,63 @@ final class EngineClientTests: XCTestCase {
         XCTAssertEqual(taskReq?["task_id"] as? String, "T004")
     }
 
+    /// T010: the history query travels over the socket with every
+    /// filter + sort + paging param, exactly as the engine dispatcher
+    /// reads them (`_RUNS_LIST_PARAMS`, int limit/offset).
+    func testFetchRunsListRoundTripsWireParamsAndPayload() throws {
+        let client = try makeClient { line in
+            switch Self.decodeJSON(line)?["op"] as? String {
+            case "runs.list":
+                return EngineSimulator.encode(
+                    EngineSimulator.runsListResponse(
+                        observedTokens: [900, nil],
+                        sortKey: "observed_tokens", order: "desc",
+                        limit: 50, offset: 50))
+            case "projects.list":
+                return EngineSimulator.encode(
+                    EngineSimulator.projectsListResponse())
+            default:
+                return EngineSimulator.encode(EngineSimulator.healthResponse())
+            }
+        }
+        let query = RunsListQuery(project: "/tmp/projA", text: "gate",
+                                  status: "done", model: "glm",
+                                  since: "2026-10-01T00:00:00+00:00",
+                                  sortKey: "observed_tokens", order: "desc",
+                                  limit: 50, offset: 50)
+        let envelope = try client.fetchRunsList(query: query)
+        XCTAssertEqual(envelope.header.op, "runs.list")
+        XCTAssertEqual(envelope.query?.sort?.key, "observed_tokens")
+        XCTAssertEqual(envelope.page?.offset, 50)
+        XCTAssertEqual(envelope.runs.count, 2)
+        XCTAssertNil(envelope.runs[1].consumption?.observedTotal)
+
+        // every filter + sort + paging param traveled on the wire
+        let sent = Self.decodeJSON(
+            simulator!.receivedRequests.first {
+                Self.decodeJSON($0)?["op"] as? String == "runs.list"
+            } ?? Data())
+        XCTAssertEqual(sent?["project"] as? String, "/tmp/projA")
+        XCTAssertEqual(sent?["text"] as? String, "gate")
+        XCTAssertEqual(sent?["status"] as? String, "done")
+        XCTAssertEqual(sent?["model"] as? String, "glm")
+        XCTAssertEqual(sent?["since"] as? String, "2026-10-01T00:00:00+00:00")
+        XCTAssertEqual(sent?["sort"] as? String, "observed_tokens")
+        XCTAssertEqual(sent?["order"] as? String, "desc")
+        XCTAssertEqual(sent?["limit"] as? Int, 50)
+        XCTAssertEqual(sent?["offset"] as? Int, 50)
+        XCTAssertNil(sent?["until"])
+        XCTAssertNil(sent?["run_id"], "未设置的过滤项不出现在请求里")
+
+        let projects = try client.fetchProjectsList(limit: 200)
+        XCTAssertEqual(projects.projects.first?.project, "/tmp/projA")
+        let projectsReq = Self.decodeJSON(
+            simulator!.receivedRequests.first {
+                Self.decodeJSON($0)?["op"] as? String == "projects.list"
+            } ?? Data())
+        XCTAssertEqual(projectsReq?["limit"] as? Int, 200)
+    }
+
     func testRequestRefreshDecodesAcceptedJob() throws {
         let client = try makeClient { line in
             switch Self.decodeJSON(line)?["op"] as? String {

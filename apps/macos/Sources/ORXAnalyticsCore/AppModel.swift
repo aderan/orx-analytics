@@ -37,6 +37,10 @@ public final class AppModel: ObservableObject {
 
     public let client: EngineClientProtocol
     public let cache: OverviewCacheStore
+    /// The history query window's model. Owned here (not per-view) so
+    /// results and filter state survive navigating into a run detail
+    /// and back — the window keeps its context (design §3).
+    public let historyModel: HistoryModel
 
     /// Serializes refresh rounds; multiple concurrent `refresh()` calls
     /// coalesce into the in-flight one (design §8: 多个刷新请求合并).
@@ -46,6 +50,7 @@ public final class AppModel: ObservableObject {
     public init(client: EngineClientProtocol, cache: OverviewCacheStore) {
         self.client = client
         self.cache = cache
+        self.historyModel = HistoryModel(client: client)
     }
 
     // MARK: - Badge (menu bar)

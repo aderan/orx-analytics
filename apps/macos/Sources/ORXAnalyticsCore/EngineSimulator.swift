@@ -484,6 +484,110 @@ public final class EngineSimulator {
         ]
     }
 
+    /// A valid v1 `runs.list` response mirroring `query_model.runs_list`:
+    /// query echo (filters + sort with the frozen secondary key), the
+    /// page of `_run_item` rows (same shape as runs.get's `run`), and
+    /// the page meta. `runs` entries give (tokens, observed, attempts)
+    /// — nil tokens mean NO canonical observation (unknown, not zero).
+    public static func runsListResponse(
+            projects: [String] = ["/tmp/projA", "/tmp/projB"],
+            observedTokens: [Int?] = [1200, nil, 350, 0],
+            status: String = "done",
+            sortKey: String = "observed_tokens",
+            order: String = "desc",
+            limit: Int = 50,
+            offset: Int = 0) -> [String: Any] {
+        let runs: [[String: Any]] = observedTokens.enumerated().map { i, total in
+            [
+                "project": projects[i % projects.count],
+                "run_id": String(format: "R%03d", i + 1),
+                "identity": [:],
+                "goal": ["id": "G001", "objective": "历史目标 \(i)",
+                         "status": ["raw": "done", "known": true,
+                                    "display": "已完成"]] as [String: Any],
+                "status": ["raw": status, "known": true,
+                           "display": "完成"] as [String: Any],
+                "started_at": "2026-10-\(String(format: "%02d", i + 1))T09:00:00+00:00",
+                "completed_at": "2026-10-\(String(format: "%02d", i + 1))T10:00:00+00:00",
+                "updated_at": "2026-10-16T00:00:00+00:00",
+                "created_at": "2026-10-01T00:00:00+00:00",
+                "time_basis": ["field": "started_at",
+                               "value": "2026-10-\(String(format: "%02d", i + 1))T09:00:00+00:00"],
+                "progress": ["completed": 2, "total": 3,
+                             "revision_id": 101, "revision": 2,
+                             "basis": "current revision only"],
+                "consumption": [
+                    "caliber": "orx_recorded",
+                    "tokens": total == nil
+                        ? ["input_tokens": NSNull(), "output_tokens": NSNull(),
+                           "cached_input": NSNull()] as [String: Any]
+                        : ["input_tokens": total == 0 ? 0 : total! - 200,
+                           "output_tokens": total == 0 ? 0 : 200,
+                           "cached_input": NSNull()],
+                    "observed_total": total ?? NSNull(),
+                    "missing_fields": ["input_tokens": 0, "output_tokens": 0,
+                                       "cached_input": 1],
+                    "accuracy": ["exact": 2, "estimated": 0, "unknown": 0],
+                    "coverage": ["observed": 2, "attempts": 3,
+                                 "missing_recorded": 1, "unassessed": 0],
+                ] as [String: Any],
+                "data_as_of": "2026-10-16T00:00:00+00:00",
+                "schema_version": "11",
+            ] as [String: Any]
+        }
+        return [
+            "op": "runs.list", "ok": true, "protocol_version": 1,
+            "generated_at": "2026-10-16T00:00:00+00:00",
+            "query": [
+                "filters": ["status": status],
+                "sort": ["key": sortKey, "order": order,
+                         "secondary": "identity(project, run_id)"],
+            ] as [String: Any],
+            "runs": runs,
+            "page": ["limit": limit, "offset": offset,
+                     "total_matched": offset + observedTokens.count + 3,
+                     "returned": observedTokens.count],
+            "snapshots": [:],
+            "coverage": ["projects": ["considered": 2, "queried": 2,
+                                      "excluded": []],
+                         "runs": ["matched": offset + observedTokens.count + 3]],
+            "warnings": [],
+        ]
+    }
+
+    /// A valid v1 `projects.list` response mirroring
+    /// `query_model.projects_list`.
+    public static func projectsListResponse(
+            projects: [(key: String, name: String, runs: Int)] = [
+                ("/tmp/projA", "ProjA", 12), ("/tmp/projB", "ProjBORX", 3),
+            ]) -> [String: Any] {
+        [
+            "op": "projects.list", "ok": true, "protocol_version": 1,
+            "generated_at": "2026-10-16T00:00:00+00:00",
+            "projects": projects.map { p in
+                [
+                    "project": p.key, "name": p.name,
+                    "registered_at": "2026-10-01T00:00:00+00:00",
+                    "orx_enabled": 1, "state_db_present": 1,
+                    "runs_known": p.runs,
+                    "last_snapshot": ["snapshot_id": 1,
+                                      "taken_at": "2026-10-16T00:00:00+00:00",
+                                      "schema_version": "11",
+                                      "supported": true],
+                    "data_health": ["health": "正常", "source_readable": true,
+                                    "schema_supported": true, "stale": false],
+                ] as [String: Any]
+            },
+            "page": ["limit": 200, "offset": 0,
+                     "total_matched": projects.count,
+                     "returned": projects.count],
+            "snapshots": [:],
+            "coverage": ["registered": projects.count,
+                         "returned": projects.count],
+            "warnings": [],
+        ]
+    }
+
     /// A valid v1 `health` response.
     public static func healthResponse(version: Int = 1) -> [String: Any] {
         [

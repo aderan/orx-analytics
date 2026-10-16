@@ -48,10 +48,11 @@ struct ORXAnalyticsApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // Details live in their own window (T009: the four-zone run/task
-        // detail). Keeping it a separate scene preserves "关闭窗口后继续
-        // 驻留" — only the panel's 退出 ends the app.
-        Window("执行详情", id: "run-detail") {
+        // T009/T010: the same window hosts the history query (查看全部
+        // 执行) and the four-zone run detail of a selected run. Keeping
+        // it a separate scene preserves "关闭窗口后继续驻留" — only the
+        // panel's 退出 ends the app.
+        Window("历史查询 / 执行详情", id: "run-detail") {
             RunDetailHostView()
                 .environmentObject(model)
         }

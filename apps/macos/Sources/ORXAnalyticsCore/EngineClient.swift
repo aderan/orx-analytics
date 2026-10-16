@@ -46,6 +46,13 @@ public protocol EngineClientProtocol: AnyObject {
     /// Fetch one run's detail (`runs.get`): facts + tasks + BOTH usage
     /// calibers, from the engine's query layer only.
     func fetchRunDetail(project: String, runID: String) throws -> RunDetailEnvelope
+    /// Query the cross-project run history (`runs.list`): filters,
+    /// sorting and paging all execute engine-side — the app never
+    /// re-sorts or re-pages locally.
+    func fetchRunsList(query: RunsListQuery) throws -> RunsListEnvelope
+    /// Registered projects (`projects.list`) — the option source for
+    /// the history window's project filter.
+    func fetchProjectsList(limit: Int) throws -> ProjectsListEnvelope
     /// Fetch one task's drill-down (`tasks.get`): attempts, session
     /// links, verifications, retry summary.
     func fetchTaskDetail(project: String, runID: String, revisionID: Int,
@@ -68,6 +75,14 @@ extension EngineClientProtocol {
 
     public func fetchRunDetailAsync(project: String, runID: String) async throws -> RunDetailEnvelope {
         try await runOffMainThrows { try self.fetchRunDetail(project: project, runID: runID) }
+    }
+
+    public func fetchRunsListAsync(query: RunsListQuery) async throws -> RunsListEnvelope {
+        try await runOffMainThrows { try self.fetchRunsList(query: query) }
+    }
+
+    public func fetchProjectsListAsync(limit: Int) async throws -> ProjectsListEnvelope {
+        try await runOffMainThrows { try self.fetchProjectsList(limit: limit) }
     }
 
     public func fetchTaskDetailAsync(project: String, runID: String,
@@ -174,6 +189,22 @@ public final class EngineSocketClient: EngineClientProtocol {
                                      params: ["project": project,
                                               "run_id": runID])
             return try Self.decode(RunDetailEnvelope.self, from: data)
+        }
+    }
+
+    public func fetchRunsList(query: RunsListQuery) throws -> RunsListEnvelope {
+        try ioQueue.sync {
+            let data = try roundTrip(op: "runs.list",
+                                     params: query.wireParams())
+            return try Self.decode(RunsListEnvelope.self, from: data)
+        }
+    }
+
+    public func fetchProjectsList(limit: Int) throws -> ProjectsListEnvelope {
+        try ioQueue.sync {
+            let data = try roundTrip(op: "projects.list",
+                                     params: ["limit": limit])
+            return try Self.decode(ProjectsListEnvelope.self, from: data)
         }
     }
 

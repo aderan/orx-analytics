@@ -2,8 +2,9 @@ import SwiftUI
 import ORXAnalyticsCore
 
 /// Host of the "执行详情" window: the selected run's four-zone detail,
-/// or the all-runs entry list when no run is selected (full history
-/// search is a later task; this list only mirrors the cached panel).
+/// or the history query (查看全部执行) when no run is selected. The
+/// HistoryModel lives on the AppModel, so filters and the current page
+/// survive navigating into a detail and back.
 struct RunDetailHostView: View {
     @EnvironmentObject private var model: AppModel
 
@@ -12,81 +13,7 @@ struct RunDetailHostView: View {
             RunDetailView(identity: selection, client: model.client)
                 .id(selection)
         } else {
-            AllRunsEntryListView()
-        }
-    }
-}
-
-/// Entry list shown by "查看全部执行…": every cached run card (attention
-/// first, same-once rule) as a link into the detail. No search yet.
-struct AllRunsEntryListView: View {
-    @EnvironmentObject private var model: AppModel
-
-    private var panel: PanelModel {
-        model.cachedOverview.map { PanelModel.build($0.envelope) } ?? .empty
-    }
-
-    var body: some View {
-        let panel = self.panel
-        VStack(alignment: .leading, spacing: 12) {
-            Text("执行列表").font(.title2)
-            Text("来自菜单栏面板缓存的执行入口（跨项目搜索与过滤在历史查询版本提供）。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            List {
-                if !panel.needsAttention.isEmpty {
-                    Section("需要关注") {
-                        ForEach(panel.needsAttention) { EntryRow(card: $0) }
-                    }
-                }
-                Section("进行中") {
-                    if panel.active.isEmpty {
-                        Text("当前没有进行中的执行").foregroundStyle(.secondary)
-                    } else {
-                        ForEach(panel.active) { EntryRow(card: $0) }
-                    }
-                }
-                if !panel.recentCompleted.isEmpty {
-                    Section("最近完成") {
-                        ForEach(panel.recentCompleted) { EntryRow(card: $0) }
-                    }
-                }
-            }
-            .listStyle(.inset)
-        }
-        .padding()
-        .frame(minWidth: 520, minHeight: 420)
-    }
-
-    private struct EntryRow: View {
-        @EnvironmentObject private var model: AppModel
-        let card: PanelRunCard
-
-        var body: some View {
-            Button {
-                model.openRunDetail(project: card.run.project,
-                                    runID: card.run.runID)
-            } label: {
-                HStack {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("\(QuickPanelView.projectName(card.run.project)) / \(card.run.goal?.objective ?? card.run.runID)")
-                            .lineLimit(1)
-                        HStack(spacing: 8) {
-                            Text(card.run.status.display)
-                            Text("任务 \(MetricsFormat.progressText(card.run.progress))（当前计划）")
-                            Text("已观测 token \(MetricsFormat.tokenText(card.run.consumption?.observedTotal))（全部版本）")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            HistoryQueryView(history: model.historyModel)
         }
     }
 }
@@ -158,6 +85,14 @@ struct RunDetailView: View {
 
     private func toolbar(run: RunFacts) -> some View {
         HStack(alignment: .firstTextBaseline) {
+            // Back to the history query that led here (filters and page
+            // are kept); closing the window still keeps the app resident.
+            Button {
+                app.openAllRuns()
+            } label: {
+                Label("历史查询", systemImage: "chevron.backward")
+            }
+            .help("返回历史查询（保留过滤条件与结果页）")
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(QuickPanelView.projectName(run.project)) / \(run.goal?.objective ?? run.runID)")
                     .font(.title3)

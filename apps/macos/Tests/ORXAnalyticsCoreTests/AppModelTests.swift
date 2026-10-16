@@ -66,6 +66,28 @@ final class FakeEngineClient: EngineClientProtocol {
         }
     }
 
+    // History ops (T010): simulator-shaped canned payloads so the
+    // AppModel-owned HistoryModel works without a live engine.
+    func fetchRunsList(query: RunsListQuery) throws -> RunsListEnvelope {
+        nap()
+        let data = EngineSimulator.encode(EngineSimulator.runsListResponse())
+        do {
+            return try JSONDecoder().decode(RunsListEnvelope.self, from: data)
+        } catch {
+            throw EngineFailure.invalidResponse("fake runs list: \(error)")
+        }
+    }
+
+    func fetchProjectsList(limit: Int) throws -> ProjectsListEnvelope {
+        nap()
+        let data = EngineSimulator.encode(EngineSimulator.projectsListResponse())
+        do {
+            return try JSONDecoder().decode(ProjectsListEnvelope.self, from: data)
+        } catch {
+            throw EngineFailure.invalidResponse("fake projects list: \(error)")
+        }
+    }
+
     static func fixture(activeRuns: Int, attention: Int,
                         recentCompleted: Int = 0) -> OverviewEnvelope {
         let data = EngineSimulator.encode(

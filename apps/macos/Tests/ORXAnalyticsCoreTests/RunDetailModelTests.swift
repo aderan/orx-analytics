@@ -264,4 +264,26 @@ final class FakeDetailClient: EngineClientProtocol {
         if let taskDetailError { throw taskDetailError }
         return taskDetail ?? RunDetailModelTests.fixtureTaskDetail()
     }
+
+    // History ops (T010) — not exercised by detail tests; canned so the
+    // conformance stays complete.
+    func fetchRunsList(query: RunsListQuery) throws -> RunsListEnvelope {
+        sawMainThreadDuringFetch = sawMainThreadDuringFetch || Thread.isMainThread
+        let data = EngineSimulator.encode(EngineSimulator.runsListResponse())
+        do {
+            return try JSONDecoder().decode(RunsListEnvelope.self, from: data)
+        } catch {
+            throw EngineFailure.invalidResponse("fake runs list: \(error)")
+        }
+    }
+
+    func fetchProjectsList(limit: Int) throws -> ProjectsListEnvelope {
+        sawMainThreadDuringFetch = sawMainThreadDuringFetch || Thread.isMainThread
+        let data = EngineSimulator.encode(EngineSimulator.projectsListResponse())
+        do {
+            return try JSONDecoder().decode(ProjectsListEnvelope.self, from: data)
+        } catch {
+            throw EngineFailure.invalidResponse("fake projects list: \(error)")
+        }
+    }
 }
