@@ -203,7 +203,7 @@ if [ "$MODE" = dist ]; then
   mv "$IMGSTAGE/$APP_NAME.app" "$APP"
   rm -rf "$IMGSTAGE"
 else
-  ( cd "$STAGE" && ditto -c -k --keepParent "$APP_NAME.app" "$(basename "$ARCHIVE")" )
+  ditto -c -k --keepParent "$APP" "$ARCHIVE"
 fi
 
 echo
