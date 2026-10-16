@@ -30,6 +30,10 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var lastFailureText: String?
     /// When the last SUCCESSFUL network refresh landed (nil = cache only).
     @Published public private(set) var lastRefreshedAt: Date?
+    /// The run whose detail window is open (nil = the all-runs entry
+    /// list). Set before opening the window so the view keeps the
+    /// project + run context (design §3: 保留项目和执行上下文).
+    @Published public private(set) var selectedRun: RunIdentity?
 
     public let client: EngineClientProtocol
     public let cache: OverviewCacheStore
@@ -61,15 +65,31 @@ public final class AppModel: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Open path: publish cache first, refresh in the background.
+    /// Open path: publish cache first, refresh in the background. Never
+    /// downgrades: once fresher in-memory data exists, re-opening the
+    /// panel does not clobber it with an older cache file.
     public func bootstrap() {
-        cachedOverview = cache.load()
+        if cachedOverview == nil {
+            cachedOverview = cache.load()
+        }
         Task { await self.refresh(reason: "panel-open") }
     }
 
     /// User-visible refresh (button) — same coalescing.
     public func refreshNow() async {
         await refresh(reason: "manual")
+    }
+
+    // MARK: - detail navigation
+
+    /// Point the detail window at one run and let the caller open it.
+    public func openRunDetail(project: String, runID: String) {
+        selectedRun = RunIdentity(project: project, runID: runID)
+    }
+
+    /// Show the all-runs entry list instead of a specific run.
+    public func openAllRuns() {
+        selectedRun = nil
     }
 
     /// One refresh round: negotiate -> request collection -> fetch the

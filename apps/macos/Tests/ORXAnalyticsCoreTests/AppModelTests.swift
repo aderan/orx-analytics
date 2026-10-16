@@ -39,6 +39,33 @@ final class FakeEngineClient: EngineClientProtocol {
         return RefreshAccepted(jobID: "job-1")
     }
 
+    // Detail ops (T009): the fake serves simulator-shaped payloads so
+    // AppModel-driven windows can drill in without a live engine.
+    func fetchRunDetail(project: String, runID: String) throws -> RunDetailEnvelope {
+        nap()
+        let data = EngineSimulator.encode(
+            EngineSimulator.runDetailResponse(project: project, runID: runID))
+        do {
+            return try JSONDecoder().decode(RunDetailEnvelope.self, from: data)
+        } catch {
+            throw EngineFailure.invalidResponse("fake run detail: \(error)")
+        }
+    }
+
+    func fetchTaskDetail(project: String, runID: String, revisionID: Int,
+                         taskID: String) throws -> TaskDetailEnvelope {
+        nap()
+        let data = EngineSimulator.encode(
+            EngineSimulator.taskDetailResponse(project: project, runID: runID,
+                                               revisionID: revisionID,
+                                               taskID: taskID))
+        do {
+            return try JSONDecoder().decode(TaskDetailEnvelope.self, from: data)
+        } catch {
+            throw EngineFailure.invalidResponse("fake task detail: \(error)")
+        }
+    }
+
     static func fixture(activeRuns: Int, attention: Int,
                         recentCompleted: Int = 0) -> OverviewEnvelope {
         let data = EngineSimulator.encode(

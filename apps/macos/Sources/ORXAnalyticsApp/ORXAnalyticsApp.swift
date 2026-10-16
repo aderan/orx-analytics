@@ -48,13 +48,14 @@ struct ORXAnalyticsApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // Details live in their own window (skeleton entry; T009 fills
-        // in the four-zone run/task detail). Keeping it a separate scene
-        // preserves "关闭窗口后继续驻留".
+        // Details live in their own window (T009: the four-zone run/task
+        // detail). Keeping it a separate scene preserves "关闭窗口后继续
+        // 驻留" — only the panel's 退出 ends the app.
         Window("执行详情", id: "run-detail") {
-            RunDetailStubView()
+            RunDetailHostView()
                 .environmentObject(model)
         }
+        .windowResizability(.contentSize)
 
         Settings {
             SettingsView()

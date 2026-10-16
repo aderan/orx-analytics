@@ -44,6 +44,25 @@ public enum MetricsFormat {
         let caliber = consumption.caliber == "orx_recorded" ? "ORX 已记录" : (consumption.caliber ?? "未知口径")
         return "已观测 token \(tokenText(consumption.observedTotal))（\(caliber)）"
     }
+
+    /// Coverage honesty line from an engine coverage block:
+    /// "已观测 a/b 次尝试". Unknown coverage renders dashes.
+    public static func coverageText(_ coverage: CoverageBlock?) -> String {
+        guard let coverage else { return "已观测 —/— 次尝试" }
+        return "已观测 \(coverage.observed)/\(coverage.attempts) 次尝试"
+    }
+
+    /// Missing-field explanation from the engine's per-field missing
+    /// counts (input_tokens/output_tokens/cached_input). A count of 0
+    /// IS shown as absence of misses only when the dict exists; a nil
+    /// dict means the engine reported nothing — render "—".
+    public static func missingText(_ missing: [String: Int]?) -> String {
+        guard let missing else { return "字段缺失 —" }
+        let parts = missing.filter { $0.value > 0 }
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key) 缺 \($0.value) 行" }
+        return parts.isEmpty ? "无缺失记录" : parts.joined(separator: "，")
+    }
 }
 
 /// The two calibers the UI may show for the same run. Constructed with

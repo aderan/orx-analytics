@@ -1,0 +1,679 @@
+import SwiftUI
+import ORXAnalyticsCore
+
+/// Host of the "执行详情" window: the selected run's four-zone detail,
+/// or the all-runs entry list when no run is selected (full history
+/// search is a later task; this list only mirrors the cached panel).
+struct RunDetailHostView: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        if let selection = model.selectedRun {
+            RunDetailView(identity: selection, client: model.client)
+                .id(selection)
+        } else {
+            AllRunsEntryListView()
+        }
+    }
+}
+
+/// Entry list shown by "查看全部执行…": every cached run card (attention
+/// first, same-once rule) as a link into the detail. No search yet.
+struct AllRunsEntryListView: View {
+    @EnvironmentObject private var model: AppModel
+
+    private var panel: PanelModel {
+        model.cachedOverview.map { PanelModel.build($0.envelope) } ?? .empty
+    }
+
+    var body: some View {
+        let panel = self.panel
+        VStack(alignment: .leading, spacing: 12) {
+            Text("执行列表").font(.title2)
+            Text("来自菜单栏面板缓存的执行入口（跨项目搜索与过滤在历史查询版本提供）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            List {
+                if !panel.needsAttention.isEmpty {
+                    Section("需要关注") {
+                        ForEach(panel.needsAttention) { EntryRow(card: $0) }
+                    }
+                }
+                Section("进行中") {
+                    if panel.active.isEmpty {
+                        Text("当前没有进行中的执行").foregroundStyle(.secondary)
+                    } else {
+                        ForEach(panel.active) { EntryRow(card: $0) }
+                    }
+                }
+                if !panel.recentCompleted.isEmpty {
+                    Section("最近完成") {
+                        ForEach(panel.recentCompleted) { EntryRow(card: $0) }
+                    }
+                }
+            }
+            .listStyle(.inset)
+        }
+        .padding()
+        .frame(minWidth: 520, minHeight: 420)
+    }
+
+    private struct EntryRow: View {
+        @EnvironmentObject private var model: AppModel
+        let card: PanelRunCard
+
+        var body: some View {
+            Button {
+                model.openRunDetail(project: card.run.project,
+                                    runID: card.run.runID)
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("\(QuickPanelView.projectName(card.run.project)) / \(card.run.goal?.objective ?? card.run.runID)")
+                            .lineLimit(1)
+                        HStack(spacing: 8) {
+                            Text(card.run.status.display)
+                            Text("任务 \(MetricsFormat.progressText(card.run.progress))（当前计划）")
+                            Text("已观测 token \(MetricsFormat.tokenText(card.run.consumption?.observedTotal))（全部版本）")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
+
+/// The run detail window: four zones (design §3/§4/§5).
+///
+/// 1. 执行概况 — identity, three INDEPENDENT status dimensions
+///    (execution status / attention / data health), timing, and the
+///    data-as-of stamps.
+/// 2. 任务列表 — tasks grouped by revision, history COLLAPSED by
+///    default; current-plan progress and historical-plan consumption
+///    stay separate expressions.
+/// 3. 消耗分析 — the two calibers side by side (never added), role
+///    ledgers, missing explanations, model distribution.
+/// 4. 尝试与证据 — the selected task's attempts (result / usage /
+///    session link / failure reason / source), verifications, retry.
+struct RunDetailView: View {
+    @EnvironmentObject private var app: AppModel
+    @StateObject private var model: RunDetailModel
+    let identity: RunIdentity
+
+    /// Revision rows the user expanded (default: none — Revision 默认收起).
+    @State private var expandedRevisions: Set<Int> = []
+
+    init(identity: RunIdentity, client: EngineClientProtocol) {
+        self.identity = identity
+        _model = StateObject(wrappedValue: RunDetailModel(client: client,
+                                                          identity: identity))
+    }
+
+    var body: some View {
+        Group {
+            if let envelope = model.detail, envelope.found, let run = envelope.run {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        toolbar(run: run)
+                        factsZone(envelope, run)
+                        Divider()
+                        taskListZone(envelope, run)
+                        Divider()
+                        consumptionZone(envelope)
+                        Divider()
+                        evidenceZone(envelope)
+                    }
+                    .padding(16)
+                }
+            } else if let envelope = model.detail, !envelope.found {
+                notFound(envelope)
+            } else {
+                loading
+            }
+        }
+        .frame(minWidth: 660, minHeight: 560)
+        .onAppear {
+            Task { await model.load() }
+            model.startAutoRefresh()
+        }
+        .onDisappear { model.stopAutoRefresh() }
+        // Revision 默认收起，当前计划例外：任务列表的默认内容就是
+        // 当前计划任务（设计 §3）；历史计划保持收起，调查重规划时展开。
+        .onReceive(model.$detail.compactMap { $0 }.prefix(1)) { envelope in
+            if let current = envelope.run?.progress?.revisionID {
+                expandedRevisions.insert(current)
+            }
+        }
+    }
+
+    // MARK: toolbar
+
+    private func toolbar(run: RunFacts) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(QuickPanelView.projectName(run.project)) / \(run.goal?.objective ?? run.runID)")
+                    .font(.title3)
+                Text("\(run.project) · Run \(run.runID)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if model.isLoading {
+                ProgressView().controlSize(.small)
+                    .help("正在异步刷新（不阻塞界面）")
+            }
+            Button {
+                Task { await model.refresh() }
+            } label: {
+                Label("刷新", systemImage: "arrow.clockwise")
+            }
+            .help("异步刷新（不阻塞界面）")
+        }
+    }
+
+    private var loading: some View {
+        VStack(spacing: 10) {
+            ProgressView()
+            Text("正在加载执行详情…").foregroundStyle(.secondary)
+            if let failure = model.lastFailureText {
+                Text(failure).font(.caption).foregroundStyle(.secondary)
+            }
+            if model.detail == nil, model.lastFailureText != nil {
+                Button("重试") { Task { await model.load() } }
+            }
+        }
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func notFound(_ envelope: RunDetailEnvelope) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "questionmark.square.dashed")
+                .font(.largeTitle)
+            Text("未找到该执行").font(.title3)
+            Text(envelope.reason ?? "原因未知")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            if let failure = model.lastFailureText {
+                Text(failure).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: zone 1 — 执行概况
+
+    private func factsZone(_ envelope: RunDetailEnvelope, _ run: RunFacts) -> some View {
+        zone("执行概况") {
+            let dims = RunDimensions.build(
+                run: run, tasks: envelope.tasks,
+                health: app.cachedOverview
+                    .flatMap { PanelModel.build($0.envelope).health(for: run.project) },
+                snapshots: envelope.snapshots, project: run.project)
+            HStack(spacing: 8) {
+                dimensionChip("执行状态", dims.executionStatus)
+                dimensionChip("关注事项", dims.attentionSummary)
+                dimensionChip("数据健康", dims.dataHealth)
+            }
+            keyValue("项目", run.project)
+            keyValue("Run", run.runID)
+            if let objective = run.goal?.objective {
+                keyValue("目标", objective)
+            }
+            keyValue("开始时间", DisplayTime.full(run.startedAt) ?? run.startedAt ?? "—")
+            keyValue("结束时间", DisplayTime.full(run.completedAt) ?? run.completedAt ?? "—")
+            keyValue("经过时长", DisplayTime.elapsed(from: run.startedAt,
+                                                     to: run.completedAt) ?? "—")
+            // 数据更新时间：来源快照拍摄时刻（§4：与任务进展时间分立）
+            keyValue("数据更新时间", DisplayTime.full(run.dataAsOf) ?? run.dataAsOf ?? "—")
+            if let snap = envelope.snapshots[run.project] {
+                keyValue("数据来源", "快照 #\(snap.snapshotID.map(String.init) ?? "—")"
+                         + " · schema \(snap.schemaVersion ?? "—")"
+                         + (snap.supported == false ? "（版本不支持）" : ""))
+                if let taken = DisplayTime.full(snap.takenAt) {
+                    keyValue("快照拍摄时间", taken)
+                }
+            }
+            if let field = run.timeBasis?.field, field != "started_at" {
+                keyValue("时间依据", "该执行无 started_at，按 \(field) 排序与显示")
+            }
+            if let failure = model.lastFailureText {
+                Text("最近一次刷新失败（仍显示上次成功数据）：\(failure)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// One independent dimension chip. Text always carries the meaning —
+    /// color is decoration, never the only signal (design §4).
+    private func dimensionChip(_ label: String, _ value: String) -> some View {
+        HStack(spacing: 4) {
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.caption.weight(.semibold))
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.primary.opacity(0.08)))
+        }
+        .help("\(label)：\(value)")
+    }
+
+    // MARK: zone 2 — 任务列表（Revision 默认收起）
+
+    private func taskListZone(_ envelope: RunDetailEnvelope, _ run: RunFacts) -> some View {
+        zone("任务列表") {
+            let currentRevision = run.progress?.revisionID
+            let byRevision = Dictionary(grouping: envelope.tasks, by: \.revisionID)
+            let ordered = envelope.revisions.sorted {
+                ($0.revision ?? 0, $0.revisionID) < ($1.revision ?? 0, $1.revisionID)
+            }
+            if ordered.isEmpty {
+                Text("暂无计划任务").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(ordered) { revision in
+                let tasks = (byRevision[revision.revisionID] ?? [])
+                    .sorted { $0.taskID < $1.taskID }
+                let isCurrent = revision.revisionID == currentRevision
+                let revConsumption = envelope.usage?.perRevision?
+                    .first { $0.revisionID == revision.revisionID }
+                DisclosureGroup(isExpanded: binding(for: revision.revisionID)) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(tasks) { task in
+                            taskRow(task, isCurrent: isCurrent)
+                        }
+                    }
+                    .padding(.top, 2)
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("Revision \(revision.revision.map(String.init) ?? "—")")
+                                .font(.callout.weight(isCurrent ? .semibold : .regular))
+                            if isCurrent {
+                                Text("当前计划")
+                                    .font(.caption2)
+                                    .padding(.horizontal, 5).padding(.vertical, 1)
+                                    .background(RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color.accentColor.opacity(0.18)))
+                            } else {
+                                Text("历史计划")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text("\(revision.taskCount) 任务")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        // 当前计划显示任务进度；历史计划只显示其已归账消耗
+                        // （进度与消耗分开表达，§3）。
+                        if isCurrent {
+                            Text("任务 \(MetricsFormat.progressText(run.progress))（已完成/当前计划任务数）")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if let book = revConsumption?.book {
+                            Text("该版本已观测 token \(MetricsFormat.tokenText(book.tokens?.inputTokens)) 输入 / \(MetricsFormat.tokenText(book.tokens?.outputTokens)) 输出（保留计入 Run 汇总，不因重规划丢失）")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("该版本消耗：—")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func binding(for revisionID: Int) -> Binding<Bool> {
+        Binding(
+            get: { expandedRevisions.contains(revisionID) },
+            set: { expanded in
+                if expanded {
+                    expandedRevisions.insert(revisionID)
+                } else {
+                    expandedRevisions.remove(revisionID)
+                }
+            })
+    }
+
+    private func taskRow(_ task: TaskListItem, isCurrent: Bool) -> some View {
+        Button {
+            Task { await model.select(task: task) }
+        } label: {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(task.objective ?? task.taskID)
+                            .font(.callout)
+                            .lineLimit(1)
+                        Text(task.status.display)
+                            .font(.caption)
+                            .foregroundStyle(task.status.known ? .primary : .secondary)
+                        if model.selectedTask?.id == task.id {
+                            Image(systemName: "arrow.turn.down.right")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    HStack(spacing: 8) {
+                        Text("执行次数 \(MetricsFormat.countText(task.attemptCount))")
+                        Text("已观测 token \(MetricsFormat.tokenText(task.consumption?.observedTotal))（ORX 已记录）")
+                        Text(MetricsFormat.coverageText(task.consumption?.coverage))
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    if let failure = task.failureReason, !failure.isEmpty {
+                        Label("异常提示：\(failure)", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                Spacer()
+            }
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("查看该任务的尝试、验证与用量")
+    }
+
+    // MARK: zone 3 — 消耗分析（两口径并列，不相加）
+
+    private func consumptionZone(_ envelope: RunDetailEnvelope) -> some View {
+        zone("消耗分析") {
+            // 两个口径并排：ORX 已记录用量 / 原生会话预览。
+            // 结构上不相加——两组行各自来自引擎，没有混合总数。
+            let calibers = DetailCalibers(usage: envelope.usage,
+                                          preview: envelope.nativePreview)
+            HStack(alignment: .top, spacing: 12) {
+                caliberBox(title: "ORX 已记录用量（主口径）",
+                           subtitle: "来源快照 \(envelope.usage?.asOf ?? "—")",
+                           rows: calibers.orxRows)
+                caliberBox(title: "原生会话预览（独立口径，与左列不相加）",
+                           subtitle: nativeSubtitle(envelope.nativePreview),
+                           rows: calibers.nativeRows)
+            }
+            if let preview = envelope.nativePreview, preview.neverSumWith != nil {
+                Text("说明：两口径可能描述同一批 token，任何视图都不将其相加（engine 标记 never_sum_with = \(preview.neverSumWith ?? "—")）。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            // 角色分账（engine 归属账本：任务/planner/controller/未归属）
+            Text("角色分账（engine 归属，未按任务数或时间摊分）")
+                .font(.subheadline.weight(.semibold))
+            let books = envelope.usage?.books
+            bookRow("任务账本（worker＋verifier 等可归属尝试）", books?.tasks)
+            bookRow("规划开销（planner，归 Run）", books?.planner)
+            bookRow("controller（单列）", books?.controller)
+            bookRow("未归属（Run 内，绝不摊分）", books?.unattributedWithinRun)
+            if let rule = envelope.usage?.attribution?.rule {
+                Text("归属规则：\(rule)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            // 覆盖与缺失说明
+            Text("覆盖与缺失说明").font(.subheadline.weight(.semibold))
+            keyValue("用量覆盖", MetricsFormat.coverageText(envelope.usage?.coverage))
+            keyValue("字段缺失", MetricsFormat.missingText(envelope.usage?.missingFields))
+            if let accuracy = envelope.usage?.accuracy {
+                keyValue("准确度分布",
+                         "exact \(accuracy["exact"] ?? 0) · estimated \(accuracy["estimated"] ?? 0) · unknown \(accuracy["unknown"] ?? 0)")
+            }
+            if let normalized = envelope.usage?.normalizedProcessing {
+                keyValue("标准化处理量（v\(normalized.version)，派生指标，与原始 token 分开）",
+                         MetricsFormat.tokenText(normalized.value)
+                         + (normalized.partial == true ? "（部分和，缺 \(normalized.rowsMissing ?? 0) 行）" : ""))
+            }
+
+            Divider()
+
+            // 模型分布：按尝试计数（不在此层重算 token 归属）
+            Text("模型分布").font(.subheadline.weight(.semibold))
+            if let selected = model.selectedTask,
+               let attempts = model.taskDetail?.usage?.attempts {
+                let dist = ModelDistribution(attempts: attempts)
+                Text("当前所选任务 \(selected.taskID)（跨模型 token 分账见各角色账本与尝试列表）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(dist.entries) { entry in
+                    HStack {
+                        Text(entry.model)
+                        Spacer()
+                        Text("尝试 \(entry.attempts) 次")
+                    }
+                    .font(.callout)
+                }
+            } else {
+                Text("在任务列表选择任务后，按该任务的尝试显示模型分布。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func nativeSubtitle(_ preview: NativePreview?) -> String {
+        guard let preview else { return "无关联原生会话" }
+        let sessions = preview.union?.sessions?.count ?? 0
+        if sessions == 0 { return "无关联原生会话" }
+        var text = "会话 \(sessions) 个"
+        if let ms = preview.asOfSessionsMS {
+            let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
+            let f = DateFormatter()
+            f.dateFormat = "MM-dd HH:mm:ss"
+            text += " · 更新 \(f.string(from: date))"
+        }
+        return text
+    }
+
+    private func caliberBox(title: String, subtitle: String,
+                            rows: [DetailCalibers.Row]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.callout.weight(.semibold))
+            Text(subtitle).font(.caption2).foregroundStyle(.secondary)
+            ForEach(rows) { row in
+                HStack {
+                    Text(row.label).font(.caption)
+                    Spacer()
+                    Text(row.text).font(.callout.monospacedDigit())
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8)
+            .fill(Color.primary.opacity(0.04)))
+    }
+
+    private func bookRow(_ label: String, _ book: UsageBook?) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack {
+                Text(label).font(.callout)
+                Spacer()
+                Text("输入 \(MetricsFormat.tokenText(book?.tokens?.inputTokens)) · 输出 \(MetricsFormat.tokenText(book?.tokens?.outputTokens)) · 缓存 \(MetricsFormat.tokenText(book?.tokens?.cachedTokens))")
+                    .font(.caption.monospacedDigit())
+            }
+            HStack(spacing: 8) {
+                Text(MetricsFormat.coverageText(book?.coverage))
+                if let note = book?.note {
+                    Text(note).lineLimit(1)
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 1)
+    }
+
+    // MARK: zone 4 — 尝试与证据
+
+    private func evidenceZone(_ envelope: RunDetailEnvelope) -> some View {
+        zone("尝试与证据") {
+            if let selected = model.selectedTask {
+                if let taskDetail = model.taskDetail, taskDetail.found {
+                    taskBreakdown(selected, taskDetail)
+                } else if model.isTaskLoading {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("正在加载任务 \(selected.taskID) 的尝试与证据…")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("任务 \(selected.taskID) 的详情加载失败：\(model.taskFailureText ?? "原因未知")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("在任务列表点击任务，查看其每次尝试的结果、用量、会话关联、失败原因与来源。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func taskBreakdown(_ selected: SelectedTaskRef,
+                               _ taskDetail: TaskDetailEnvelope) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("任务 \(selected.taskID)：\(selected.objective ?? "—")")
+                    .font(.callout.weight(.semibold))
+                Text("重试：\(RetryDisplay.text(taskDetail.retry))")
+                    .font(.caption)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.primary.opacity(0.08)))
+                if let status = taskDetail.task?.status?.display {
+                    Text("状态：\(status)").font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let failure = taskDetail.task?.failureReason, !failure.isEmpty {
+                Label("失败原因：\(failure)", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            // 任务消耗分解：worker / verifier 分账 + 缺失说明
+            Text("任务消耗分解（ORX 已记录）").font(.subheadline.weight(.semibold))
+            bookRow("worker（含失败与重试）", taskDetail.usage?.books?.worker)
+            bookRow("verifier（计入任务，单列）", taskDetail.usage?.books?.verifier)
+            if let other = taskDetail.usage?.books?.otherRoles {
+                bookRow("其他角色（不计入任务总数，待契约定义）", other)
+            }
+            keyValue("任务用量覆盖", MetricsFormat.coverageText(taskDetail.usage?.coverage))
+            keyValue("字段缺失", MetricsFormat.missingText(taskDetail.usage?.missingFields))
+
+            Divider()
+
+            // 尝试列表：结果/用量/会话关联/失败原因/来源
+            Text("尝试（每次 Attempt 的结果、用量、会话关联、失败原因和来源）")
+                .font(.subheadline.weight(.semibold))
+            let attempts = taskDetail.usage?.attempts ?? []
+            if attempts.isEmpty {
+                Text("无尝试记录").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(attempts) { attempt in
+                attemptRow(attempt)
+            }
+
+            Divider()
+
+            // 验证证据
+            Text("验证（verifier 运行记录）").font(.subheadline.weight(.semibold))
+            if taskDetail.verifications.isEmpty {
+                Text("无验证记录").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(taskDetail.verifications) { verification in
+                HStack(spacing: 8) {
+                    Text(verification.kind ?? "—").font(.caption)
+                    Text(verification.command ?? "—")
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                    Spacer()
+                    Text("退出码 \(verification.exitCode.map(String.init) ?? "—")")
+                    Text(verification.passed == true ? "通过" :
+                            (verification.passed == false ? "未通过" : "—"))
+                        .foregroundStyle(verification.passed == false ? .orange : .secondary)
+                    Text(DisplayTime.short(verification.createdAt) ?? verification.createdAt ?? "—")
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+            }
+        }
+    }
+
+    private func attemptRow(_ attempt: AttemptDetail) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Text("#\(attempt.attemptID) \(attempt.role ?? "—")")
+                    .font(.callout.weight(.medium))
+                Text(attempt.result ?? "进行中")
+                    .font(.caption)
+                    .foregroundStyle(attempt.result == "failed" ? .orange : .secondary)
+                Text(attempt.model ?? "模型 —").font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(DisplayTime.short(attempt.startedAt) ?? attempt.startedAt ?? "—") → \(DisplayTime.short(attempt.endedAt) ?? attempt.endedAt ?? "进行中")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                // 单次尝试的规范观测（每 attempt 取一，不同来源不相加）
+                if let observation = attempt.observation {
+                    Text("来源 \(observation.source ?? "—")（\(observation.accuracy ?? "—")）")
+                    Text("输入 \(MetricsFormat.tokenText(observation.tokens?.inputTokens)) · 输出 \(MetricsFormat.tokenText(observation.tokens?.outputTokens)) · 缓存 \(MetricsFormat.tokenText(observation.tokens?.cachedTokens))")
+                        .font(.caption.monospacedDigit())
+                } else {
+                    Text("用量未观测\(attempt.usageMissingReason.map { "（\($0)）" } ?? "（原因未记录）")")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+            if let link = attempt.sessionLink {
+                Text("会话关联：\(link.sessionID ?? "—")（\(link.authority ?? "—") · \(link.confidence ?? "—")）")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let failure = attempt.failureReason, !failure.isEmpty {
+                Text("失败原因：\(failure)")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    // MARK: shared
+
+    private func zone<Content: View>(_ title: String,
+                                     @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.headline)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func keyValue(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Text(value).font(.callout).textSelection(.enabled)
+        }
+    }
+}

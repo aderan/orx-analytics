@@ -43,6 +43,13 @@ public protocol EngineClientProtocol: AnyObject {
     func fetchOverview() throws -> OverviewEnvelope
     /// Ask for a refresh (`refresh.request`); returns the accepted job.
     func requestRefresh(reason: String) throws -> RefreshAccepted
+    /// Fetch one run's detail (`runs.get`): facts + tasks + BOTH usage
+    /// calibers, from the engine's query layer only.
+    func fetchRunDetail(project: String, runID: String) throws -> RunDetailEnvelope
+    /// Fetch one task's drill-down (`tasks.get`): attempts, session
+    /// links, verifications, retry summary.
+    func fetchTaskDetail(project: String, runID: String, revisionID: Int,
+                         taskID: String) throws -> TaskDetailEnvelope
 }
 
 /// Async wrappers so callers stay off the main thread.
@@ -57,6 +64,18 @@ extension EngineClientProtocol {
 
     public func requestRefreshAsync(reason: String) async throws -> RefreshAccepted {
         try await runOffMainThrows { try self.requestRefresh(reason: reason) }
+    }
+
+    public func fetchRunDetailAsync(project: String, runID: String) async throws -> RunDetailEnvelope {
+        try await runOffMainThrows { try self.fetchRunDetail(project: project, runID: runID) }
+    }
+
+    public func fetchTaskDetailAsync(project: String, runID: String,
+                                     revisionID: Int, taskID: String) async throws -> TaskDetailEnvelope {
+        try await runOffMainThrows {
+            try self.fetchTaskDetail(project: project, runID: runID,
+                                     revisionID: revisionID, taskID: taskID)
+        }
     }
 }
 
@@ -146,6 +165,27 @@ public final class EngineSocketClient: EngineClientProtocol {
                                      params: ["reason": reason])
             // ok=true is guaranteed by roundTrip here; the op name differs.
             return try Self.decode(RefreshAccepted.self, from: data)
+        }
+    }
+
+    public func fetchRunDetail(project: String, runID: String) throws -> RunDetailEnvelope {
+        try ioQueue.sync {
+            let data = try roundTrip(op: "runs.get",
+                                     params: ["project": project,
+                                              "run_id": runID])
+            return try Self.decode(RunDetailEnvelope.self, from: data)
+        }
+    }
+
+    public func fetchTaskDetail(project: String, runID: String, revisionID: Int,
+                                taskID: String) throws -> TaskDetailEnvelope {
+        try ioQueue.sync {
+            let data = try roundTrip(op: "tasks.get",
+                                     params: ["project": project,
+                                              "run_id": runID,
+                                              "revision_id": revisionID,
+                                              "task_id": taskID])
+            return try Self.decode(TaskDetailEnvelope.self, from: data)
         }
     }
 

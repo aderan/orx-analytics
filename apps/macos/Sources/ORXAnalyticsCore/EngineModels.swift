@@ -107,7 +107,12 @@ public struct EngineErrorPayload: Codable, Equatable {
     }
 }
 
-/// Fields every engine response carries, regardless of op.
+/// Fields every engine response carries, regardless of op. `ok` is set
+/// by the ENGINE's dispatcher (`engine.handle_request` stamps
+/// `resp["ok"] = True`); a bare query-layer payload
+/// (`query_model.*` output, as used by the wire-fixture generator)
+/// omits it — an absent `ok` decodes as true, while an explicit
+/// `ok=false` (error path) is always honored.
 public struct EngineEnvelopeHeader: Codable, Equatable {
     public let op: String?
     public let ok: Bool
@@ -120,6 +125,24 @@ public struct EngineEnvelopeHeader: Codable, Equatable {
         case protocolVersion = "protocol_version"
         case generatedAt = "generated_at"
         case error
+    }
+
+    public init(op: String?, ok: Bool, protocolVersion: Int,
+                generatedAt: String?, error: EngineErrorPayload?) {
+        self.op = op
+        self.ok = ok
+        self.protocolVersion = protocolVersion
+        self.generatedAt = generatedAt
+        self.error = error
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        op = try c.decodeIfPresent(String.self, forKey: .op)
+        ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? true
+        protocolVersion = try c.decode(Int.self, forKey: .protocolVersion)
+        generatedAt = try c.decodeIfPresent(String.self, forKey: .generatedAt)
+        error = try c.decodeIfPresent(EngineErrorPayload.self, forKey: .error)
     }
 }
 
@@ -134,9 +157,11 @@ public struct DisplayStatus: Codable, Equatable {
     public let display: String
 }
 
-/// Token sums of one caliber. `nil` means the field is unknown — NOT zero
-/// (metrics freeze contract: 完全未知显示 "—", only an explicitly recorded
-/// zero renders "0").
+/// Token sums of one caliber, per field with the source's own semantics
+/// preserved. `nil` means the field is unknown — NOT zero (metrics
+/// freeze contract: 完全未知显示 "—", only an explicitly recorded zero
+/// renders "0"). NOTE the wire key of the cached field is `cached_input`
+/// (what `usage_readmodel._field_sums` serializes).
 public struct TokenSums: Codable, Equatable {
     public let inputTokens: Int?
     public let outputTokens: Int?
@@ -145,37 +170,77 @@ public struct TokenSums: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"
-        case cachedTokens = "cached_tokens"
+        case cachedTokens = "cached_input"
+    }
+
+    public init(inputTokens: Int?, outputTokens: Int?, cachedTokens: Int?) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.cachedTokens = cachedTokens
     }
 }
 
 /// Consumption of one run — ORX 已记录用量 caliber only. The native
 /// session preview is a SEPARATE caliber shown beside, never added
-/// (design §5).
+/// (design §5). `missingFields` is the engine's per-field missing-row
+/// count dict; `coverage` carries the observed/attempts honesty block.
 public struct ConsumptionBlock: Codable, Equatable {
     public let caliber: String?
     public let tokens: TokenSums?
     public let observedTotal: Int?
-    public let missingFields: Int?
+    public let missingFields: [String: Int]?
     public let accuracy: [String: Int]?
+    public let coverage: CoverageBlock?
+
+    public init(caliber: String? = nil, tokens: TokenSums? = nil,
+                observedTotal: Int? = nil,
+                missingFields: [String: Int]? = nil,
+                accuracy: [String: Int]? = nil,
+                coverage: CoverageBlock? = nil) {
+        self.caliber = caliber
+        self.tokens = tokens
+        self.observedTotal = observedTotal
+        self.missingFields = missingFields
+        self.accuracy = accuracy
+        self.coverage = coverage
+    }
 
     enum CodingKeys: String, CodingKey {
-        case caliber, tokens, accuracy
+        case caliber, tokens, accuracy, coverage
         case observedTotal = "observed_total"
         case missingFields = "missing_fields"
     }
 }
 
-/// "已完成任务数 / 当前计划任务数" — never a fake work-percentage.
+/// "已完成任务数 / 当前计划任务数" — never a fake work-percentage. The
+/// engine sends `revision_id` as the snapshot's INTEGER row id and
+/// `revision` as the revision number; both stay nil when there is no
+/// current plan.
 public struct ProgressBlock: Codable, Equatable {
     public let completed: Int
     public let total: Int
-    public let revisionID: String?
+    public let revisionID: Int?
     public let revision: Int?
+
+    public init(completed: Int, total: Int, revisionID: Int? = nil,
+                revision: Int? = nil) {
+        self.completed = completed
+        self.total = total
+        self.revisionID = revisionID
+        self.revision = revision
+    }
 
     enum CodingKeys: String, CodingKey {
         case completed, total, revision
         case revisionID = "revision_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        completed = try c.decode(Int.self, forKey: .completed)
+        total = try c.decode(Int.self, forKey: .total)
+        revisionID = WireSupport.flexInt(c, .revisionID)
+        revision = WireSupport.flexInt(c, .revision)
     }
 }
 
@@ -215,16 +280,37 @@ public struct AttentionItem: Codable, Equatable, Identifiable {
     public let project: String
     public let runID: String
     public let taskID: String?
-    public let revisionID: String?
+    public let revisionID: Int?
     public let detail: String
 
     public var id: String { "\(project)#\(runID)#\(taskID ?? "-")#\(kind)" }
+
+    public init(kind: String, project: String, runID: String,
+                taskID: String? = nil, revisionID: Int? = nil,
+                detail: String) {
+        self.kind = kind
+        self.project = project
+        self.runID = runID
+        self.taskID = taskID
+        self.revisionID = revisionID
+        self.detail = detail
+    }
 
     enum CodingKeys: String, CodingKey {
         case kind, project, detail
         case runID = "run_id"
         case taskID = "task_id"
         case revisionID = "revision_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(String.self, forKey: .kind)
+        project = try c.decode(String.self, forKey: .project)
+        runID = try c.decode(String.self, forKey: .runID)
+        taskID = try c.decodeIfPresent(String.self, forKey: .taskID)
+        revisionID = WireSupport.flexInt(c, .revisionID)
+        detail = try c.decode(String.self, forKey: .detail)
     }
 }
 
@@ -248,27 +334,41 @@ public struct OverviewSummary: Codable, Equatable {
     }
 }
 
-/// The full `overview` response: header + payload.
+/// The full `overview` response: header + payload. `projectHealth` is
+/// the data-health dimension (design §4) — separate from execution
+/// status and attention by construction.
 public struct OverviewEnvelope: Codable, Equatable {
     public let header: EngineEnvelopeHeader
     public let summary: OverviewSummary
     public let active: [OverviewRunItem]
     public let attention: [AttentionItem]
     public let recentCompleted: [OverviewRunItem]
+    public let projectHealth: [ProjectHealthRow]
+    public let snapshots: [String: SnapshotView]
+    public let warnings: [QueryWarning]
 
     public init(header: EngineEnvelopeHeader, summary: OverviewSummary,
                 active: [OverviewRunItem], attention: [AttentionItem],
-                recentCompleted: [OverviewRunItem]) {
+                recentCompleted: [OverviewRunItem],
+                projectHealth: [ProjectHealthRow] = [],
+                snapshots: [String: SnapshotView] = [:],
+                warnings: [QueryWarning] = []) {
         self.header = header
         self.summary = summary
         self.active = active
         self.attention = attention
         self.recentCompleted = recentCompleted
+        self.projectHealth = projectHealth
+        self.snapshots = snapshots
+        self.warnings = warnings
     }
 
     enum CodingKeys: String, CodingKey {
         case summary, active, attention
         case recentCompleted = "recent_completed"
+        case projectHealth = "project_health"
+        case snapshots = "snapshots"
+        case warnings = "warnings"
     }
 
     public init(from decoder: Decoder) throws {
@@ -279,6 +379,12 @@ public struct OverviewEnvelope: Codable, Equatable {
         attention = try c.decodeIfPresent([AttentionItem].self, forKey: .attention) ?? []
         recentCompleted = try c.decodeIfPresent([OverviewRunItem].self,
                                                 forKey: .recentCompleted) ?? []
+        projectHealth = try c.decodeIfPresent([ProjectHealthRow].self,
+                                              forKey: .projectHealth) ?? []
+        snapshots = try c.decodeIfPresent([String: SnapshotView].self,
+                                          forKey: .snapshots) ?? [:]
+        warnings = try c.decodeIfPresent([QueryWarning].self,
+                                         forKey: .warnings) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -292,6 +398,9 @@ public struct OverviewEnvelope: Codable, Equatable {
         try c.encode(active, forKey: .active)
         try c.encode(attention, forKey: .attention)
         try c.encode(recentCompleted, forKey: .recentCompleted)
+        try c.encode(projectHealth, forKey: .projectHealth)
+        try c.encode(snapshots, forKey: .snapshots)
+        try c.encode(warnings, forKey: .warnings)
     }
 }
 

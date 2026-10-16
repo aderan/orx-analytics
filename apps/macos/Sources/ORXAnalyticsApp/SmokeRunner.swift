@@ -17,6 +17,7 @@ enum SmokeRunner {
         results.append(("negotiation-incompatible", checkNegotiationIncompatible(), nil2s(incErr)))
         results.append(("overview-fetch", checkOverviewFetch(), nil2s(ovErr)))
         results.append(("metrics-freeze-rules", checkMetricsRules(), nil2s(mxErr)))
+        results.append(("detail-fetch-two-calibers", checkDetailFetch(), nil2s(dtErr)))
 
         var allPass = true
         for (name, pass, note) in results {
@@ -34,6 +35,7 @@ enum SmokeRunner {
     private static var incErr: String?
     private static var ovErr: String?
     private static var mxErr: String?
+    private static var dtErr: String?
 
     // MARK: checks
 
@@ -204,6 +206,87 @@ enum SmokeRunner {
             return false
         }
         return true
+    }
+
+    /// T009 detail self-check: runs.get + tasks.get against the canned
+    /// simulator payloads — the run's books decode, the native preview
+    /// declares itself a separate caliber, unknown tokens stay "—".
+    private static func checkDetailFetch() -> Bool {
+        let sim: EngineSimulator
+        do {
+            sim = try startSimulator { line in
+                let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any]
+                switch obj?["op"] as? String {
+                case "health":
+                    return EngineSimulator.encode(EngineSimulator.healthResponse())
+                case "runs.get":
+                    return EngineSimulator.encode(
+                        EngineSimulator.runDetailResponse(project: "/tmp/proj0",
+                                                          runID: "R001"))
+                case "tasks.get":
+                    return EngineSimulator.encode(
+                        EngineSimulator.taskDetailResponse(project: "/tmp/proj0",
+                                                          runID: "R001",
+                                                          revisionID: 101,
+                                                          taskID: "T001"))
+                default:
+                    return EngineSimulator.encode([
+                        "op": NSNull(), "ok": false, "protocol_version": 1,
+                        "error": ["code": "unknown_op", "message": "no",
+                                  "supported": ["runs.get"]]])
+                }
+            }
+        } catch {
+            dtErr = "simulator start failed: \(error)"
+            return false
+        }
+        defer { sim.stop() }
+        let client = EngineSocketClient(socketPath: sim.socketPath)
+        do {
+            let run = try client.fetchRunDetail(project: "/tmp/proj0", runID: "R001")
+            guard run.found, let usage = run.usage else {
+                dtErr = "run detail missing usage"
+                return false
+            }
+            guard usage.books?.planner != nil,
+                  usage.books?.unattributedWithinRun != nil else {
+                dtErr = "run books incomplete"
+                return false
+            }
+            // two calibers side by side, structurally separate
+            let calibers = DetailCalibers(usage: run.usage,
+                                          preview: run.nativePreview)
+            guard run.nativePreview?.neverSumWith == "orx_recorded",
+                  calibers.orxRows.count == 3, calibers.nativeRows.count == 6,
+                  calibers.orxRows.map(\.text).contains("—") else {
+                dtErr = "caliber separation broken"
+                return false
+            }
+            let task = try client.fetchTaskDetail(project: "/tmp/proj0",
+                                                  runID: "R001",
+                                                  revisionID: 101, taskID: "T001")
+            guard task.found,
+                  task.usage?.books?.worker?.attempts == 1,
+                  task.usage?.attempts.count == 2,
+                  task.verifications.first?.passed == true else {
+                dtErr = "task detail evidence incomplete"
+                return false
+            }
+            // identity params on the wire
+            let requests = sim.receivedRequests.compactMap {
+                (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any]
+            }
+            guard let taskReq = requests.first(where: {
+                $0["op"] as? String == "tasks.get" }),
+                  taskReq["revision_id"] as? Int == 101 else {
+                dtErr = "tasks.get params not sent as engine expects"
+                return false
+            }
+            return true
+        } catch {
+            dtErr = "\(error)"
+            return false
+        }
     }
 
     // MARK: helpers

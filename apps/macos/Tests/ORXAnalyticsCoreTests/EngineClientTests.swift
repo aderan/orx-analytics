@@ -146,6 +146,53 @@ final class EngineClientTests: XCTestCase {
         XCTAssertNil(run.consumption?.tokens?.cachedTokens)
     }
 
+    /// T009: the detail ops must reach the engine with the stable
+    /// identity params the Python dispatcher expects
+    /// (`payload["project"]`, `payload["run_id"]`,
+    /// `int(payload["revision_id"])`, `payload["task_id"]`) and decode
+    /// the books / native preview / attempts payload.
+    func testFetchRunAndTaskDetailRoundTripWireParamsAndPayload() throws {
+        let client = try makeClient { line in
+            switch Self.decodeJSON(line)?["op"] as? String {
+            case "runs.get":
+                return EngineSimulator.encode(
+                    EngineSimulator.runDetailResponse(project: "/tmp/pA",
+                                                      runID: "R009"))
+            case "tasks.get":
+                return EngineSimulator.encode(
+                    EngineSimulator.taskDetailResponse(project: "/tmp/pA",
+                                                      runID: "R009",
+                                                      revisionID: 101,
+                                                      taskID: "T004"))
+            default:
+                return EngineSimulator.encode(EngineSimulator.healthResponse())
+            }
+        }
+        let runDetail = try client.fetchRunDetail(project: "/tmp/pA", runID: "R009")
+        XCTAssertTrue(runDetail.found)
+        XCTAssertEqual(runDetail.run?.runID, "R009")
+        XCTAssertEqual(runDetail.usage?.books?.planner?.revisionIDs, [nil])
+        XCTAssertEqual(runDetail.nativePreview?.neverSumWith, "orx_recorded")
+        XCTAssertEqual(runDetail.tasks.first?.attemptCount, 1)
+
+        let taskDetail = try client.fetchTaskDetail(project: "/tmp/pA", runID: "R009",
+                                                    revisionID: 101, taskID: "T004")
+        XCTAssertTrue(taskDetail.found)
+        XCTAssertEqual(taskDetail.usage?.books?.worker?.attempts, 1)
+        XCTAssertEqual(taskDetail.usage?.attempts.count, 2)
+        XCTAssertEqual(taskDetail.verifications.first?.passed, true)
+
+        // identity params traveled exactly as the engine reads them
+        let requests = simulator!.receivedRequests.compactMap { Self.decodeJSON($0) }
+        let runReq = requests.first { $0["op"] as? String == "runs.get" }
+        XCTAssertEqual(runReq?["project"] as? String, "/tmp/pA")
+        XCTAssertEqual(runReq?["run_id"] as? String, "R009")
+        let taskReq = requests.first { $0["op"] as? String == "tasks.get" }
+        XCTAssertEqual(taskReq?["revision_id"] as? Int, 101,
+                       "revision_id 必须是整数（engine 侧 int()）")
+        XCTAssertEqual(taskReq?["task_id"] as? String, "T004")
+    }
+
     func testRequestRefreshDecodesAcceptedJob() throws {
         let client = try makeClient { line in
             switch Self.decodeJSON(line)?["op"] as? String {
