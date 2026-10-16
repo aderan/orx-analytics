@@ -12,7 +12,8 @@
   Run 汇总含全部 revision；消耗排序携带覆盖程度。
 - 测试：tests/test_display_contract.py、tests/test_usage_readmodel.py、
   tests/test_query_model.py + 全量回归。
-- 状态：未开始。
+- 状态：已完成（T001 c400e8d / T002 18a922b / T003 9cf671d；全量 138
+  passed）。
 
 ## Stage 2 发现与协调引擎（T004–T007）
 
@@ -25,7 +26,8 @@
 - 测试：ORX 仓 tests/test_project_index.py + 全量（基线 1043）；
   本仓 tests/test_discovery.py、tests/test_engine.py、
   tests/test_watch_engine.py + 全量回归。
-- 状态：未开始。
+- 状态：进行中（T004 已完成：ORX 仓 c96ed8b 索引写侧 + 本仓 0bdd02b
+  消费契约；T005–T007 未开始）。
 
 ## Stage 3 原生菜单栏闭环（T008–T009）
 
