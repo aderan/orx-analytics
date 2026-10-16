@@ -26,10 +26,10 @@
 - 测试：ORX 仓 tests/test_project_index.py + 全量（基线 1043）；
   本仓 tests/test_discovery.py、tests/test_engine.py、
   tests/test_watch_engine.py + 全量回归。
-- 状态：进行中（T004 已完成：ORX 仓 c96ed8b 索引写侧 + 本仓 0bdd02b
-  消费契约；T005 已完成：本仓发现层 discovery.py＋tests/test_discovery.py
-  ＋`discover` CLI（三来源合并去重、有界扫描、健康隔离、显式 relocate）；
-  T006–T007 未开始）。
+- 状态：已完成（T004 ORX 仓 c96ed8b＋本仓 0bdd02b 消费契约；T005
+  4af1b10；T006 0b4b992；T007 2acf0aa；全量 201 passed。现网旧
+  watcher pid 98698 仍在跑——迁移为用户确认步骤，见
+  docs/watch-migration.md）。
 
 ## Stage 3 原生菜单栏闭环（T008–T009）
 
