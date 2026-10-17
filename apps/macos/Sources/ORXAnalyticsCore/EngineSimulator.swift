@@ -159,7 +159,7 @@ public final class EngineSimulator {
                     "project": "/tmp/proj\(i)",
                     "run_id": "R00\(i + 1)",
                     "goal": ["id": "G001", "objective": "目标 \(i)",
-                             "status": ["raw": "in_progress", "known": true,
+                             "status": ["raw": "active", "known": true,
                                         "display": "进行中"]] as [String: Any],
                     "status": ["raw": "running", "known": true,
                                "display": "执行中"],

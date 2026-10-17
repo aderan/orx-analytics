@@ -71,6 +71,15 @@ struct QuickPanelView: View {
         var parts: [String] = []
         if let cached = model.cachedOverview {
             parts.append("进行中 \(cached.envelope.summary.activeRuns)")
+            // 控制层概览：进行中的执行里有多少处于已暂停/取消中控制态
+            // （G011 分层——两个维度并列，不改写执行事实）
+            let panel = PanelModel.build(cached.envelope)
+            let control = panel.activeControlCounts
+                .map { "\($0.label) \($0.count)" }
+                .joined(separator: "、")
+            if !control.isEmpty {
+                parts.append("（\(control)）")
+            }
             parts.append("需要关注 \(cached.envelope.summary.attention)")
         }
         switch model.connection {
@@ -202,6 +211,16 @@ struct QuickPanelView: View {
                         .font(.callout)
                         .lineLimit(1)
                     Spacer()
+                    // 控制层徽标（G011 分层）：目标控制状态与执行状态并列
+                    // 呈现——已暂停 Goal 下仍执行中的 Run 两个维度同时可见
+                    if let badge = card.controlBadgeText {
+                        Text(badge)
+                            .font(.caption2)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 3)
+                                .fill(Color.orange.opacity(0.18)))
+                            .help("Goal 控制状态（与执行状态分立）")
+                    }
                     Text(card.run.status.display).font(.caption)
                         .foregroundStyle(card.run.status.known ? .primary : .secondary)
                 }

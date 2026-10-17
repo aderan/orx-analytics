@@ -45,8 +45,13 @@ orx-analytics --version
 orx-analytics --help
 ```
 
-当前包版本 **0.4.1**。`@main` 安装主分支当时的提交；需要复现时固定到
+当前包版本 **0.4.2**。`@main` 安装主分支当时的提交；需要复现时固定到
 完整 commit SHA。当前安装来源是 GitHub，不依赖同名 PyPI 包。
+**经验证的兼容组合：ORX v0.4.0 + orx-analytics v0.4.2**——ORX 软件
+版本（0.4.0）、ORX 数据 schema（v15）与本工具软件版本（0.4.2）、
+analytics 存储 schema（store v3）是四条独立演进的版本轴，不必同号；
+本工具只读接受 ORX schema 8–15，拒绝未知未来版本（见
+[兼容性与来源限制](docs/compatibility.md)）。
 pipx、普通 Python 虚拟环境、PATH、升级和卸载见[完整安装指南](docs/installation.md)。
 
 运行时零第三方依赖（标准库）。数据目录默认 `~/.orx-analytics/`，可用
@@ -137,10 +142,32 @@ orx-analytics bundle session sess_xxxx --dest mysessbundle ...
 | 症状 | 处理 |
 |---|---|
 | `probe` 报 GAP | 按输出补齐（如 Cursor bubbleData 为空是本机事实，报告会标注） |
-| collect 报 `schema gate refuses` | 仅支持 ORX schema {8,9,10,11,12}。较新库需升级 analytics；较旧库由 ORX 按自己的升级流程处理，analytics 绝不代为迁移 |
+| collect 报 `schema gate refuses` | 仅支持 ORX schema {8,9,10,11,12,13,14,15}。较新库需升级 analytics；较旧库由 ORX 按自己的升级流程处理，analytics 绝不代为迁移 |
 | watch `last_error` 非 null | 读 `provenance` 看哪个源；单源失败不阻塞其他源 |
 | 关联 `ambiguous` | 多个会话命中同一 attempt 标记，或标记命中但会话创建时间在 attempt 跨度 ± 300s 之外（过期标记/证据血缘），或提示词角色声明与 attempt 角色不符（verifier 引用 worker 编号）；查看 links.evidence 候选与窗口数字，人工裁决 |
 | 想重算历史 | 每轮 ORX 快照 append-only：`report` 永远用最新快照，旧快照数据仍在库中 |
+
+## macOS App 与分发渠道（G011 T005）
+
+菜单栏 App（自带 Python 运行时，最低 macOS 13 / Apple Silicon）有两个
+互不混淆的分发渠道，构建与安装说明见
+[docs/app-installation.md](docs/app-installation.md)：
+
+- **内部预览**（`scripts/build_app.sh dev`）：ad-hoc 签名、未公证的
+  zip，App 名 `ORX Analytics (Internal Preview)`，渠道/受众/Gatekeeper
+  限制与完整来源提交标注在 Info.plist、包内 `distribution.json` 清单、
+  归档名与逐归档构建记录里。**它是明确标注限制的内部预览，不是正式
+  安装包。**
+- **正式分发**（`scripts/build_app.sh dist`）：要求 Developer ID
+  Application 签名（含内置 Python 全部嵌套可执行文件）、hardened
+  runtime、notarytool 公证、stapler 装订与 spctl 安装评估；凭据缺失
+  或任一检查失败即**失败关闭**（机器可读原因、不产出归档、绝不静默
+  降级为 ad-hoc 预览）。
+
+渠道与依据在构建前固定在 ORX 仓的分发决定文件
+（`docs/diagnostics/g011/distribution.json`）中，两个渠道的通过/阻塞
+结果分槽记录；门禁逻辑在 `scripts/app_distribution.py`，测试
+`tests/test_app_distribution.py`。
 
 ## 仓库布局
 

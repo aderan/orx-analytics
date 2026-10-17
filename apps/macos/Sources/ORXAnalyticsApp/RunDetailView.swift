@@ -156,6 +156,7 @@ struct RunDetailView: View {
                 snapshots: envelope.snapshots, project: run.project)
             HStack(spacing: 8) {
                 dimensionChip("执行状态", dims.executionStatus)
+                dimensionChip("目标控制", dims.goalControl)
                 dimensionChip("关注事项", dims.attentionSummary)
                 dimensionChip("数据健康", dims.dataHealth)
             }
@@ -163,6 +164,12 @@ struct RunDetailView: View {
             keyValue("Run", run.runID)
             if let objective = run.goal?.objective {
                 keyValue("目标", objective)
+            }
+            // G011 分层：目标控制层（goals.status 原文的展示）与 Run 执行
+            // 事实分立呈现——暂停/取消中是控制态，执行状态不被改写
+            if let control = run.goal?.status {
+                keyValue("目标状态",
+                         "\(control.display)（raw: \(control.raw ?? "—")）")
             }
             keyValue("开始时间", DisplayTime.full(run.startedAt) ?? run.startedAt ?? "—")
             keyValue("结束时间", DisplayTime.full(run.completedAt) ?? run.completedAt ?? "—")

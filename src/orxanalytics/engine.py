@@ -874,13 +874,25 @@ class Engine:
 
     def _count_active_runs(self, store: Store) -> int:
         """Non-terminal runs across every project's latest SUCCESSFUL
-        snapshot (unknown statuses are never terminal — not a verdict)."""
+        snapshot, classified by the SAME lifecycle matrix as the overview
+        (display.lifecycle_view): a run under a KNOWN cancelled Goal is
+        history and does not hold the active cadence, while paused and
+        cancelling Goals keep their in-flight runs counting — the raw run
+        status itself is never rewritten (unknown statuses are never
+        terminal — not a verdict)."""
         n = 0
         for sid in query_model._successful_snapshot_ids(store).values():
+            goals = {r["id"]: r["status"] for r in store.conn.execute(
+                "SELECT id, status FROM orx_goals WHERE snapshot_id=?",
+                (sid,))}
             for r in store.conn.execute(
-                    "SELECT status FROM orx_runs WHERE snapshot_id=?",
+                    "SELECT goal_id, status FROM orx_runs WHERE snapshot_id=?",
                     (sid,)):
-                if not display.is_terminal(display.run_status(r["status"])):
+                goal_st = (display.goal_status(goals.get(r["goal_id"]))
+                           if r["goal_id"] else None)
+                view = display.lifecycle_view(
+                    goal_st, display.run_status(r["status"]))
+                if view["bucket"] == "active":
                     n += 1
         return n
 

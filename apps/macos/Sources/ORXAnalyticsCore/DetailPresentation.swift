@@ -7,8 +7,15 @@ import Foundation
 /// an unrecognized raw status stays 未知状态, an unavailable health
 /// classification stays 未知, and nothing mixes the three into one
 /// red/yellow/green verdict.
+///
+/// G011 lifecycle layering: `goalControl` carries the Goal CONTROL
+/// layer (进行中/已暂停/取消中/已取消/已完成) beside `executionStatus`
+/// (the Run's facts) — a paused Goal with an in-flight run shows
+/// 已暂停 + 执行中; neither value rewrites the other. Absent or unknown
+/// control layers display 未知, never a guessed terminal state.
 public struct RunDimensions: Equatable {
     public let executionStatus: String
+    public let goalControl: String
     public let attentionSummary: String
     public let dataHealth: String
 
@@ -17,6 +24,9 @@ public struct RunDimensions: Equatable {
                              snapshots: [String: SnapshotView],
                              project: String?) -> RunDimensions {
         let status = run?.status.display ?? "未知状态"
+        let goalControl = run?.goal?.status.map { control -> String in
+            control.known ? control.display : "未知"
+        } ?? "未知"
 
         // Attention = current-facts failures of the CURRENT plan only
         // (design §4: a recovered failure is history, waiting on
@@ -46,6 +56,7 @@ public struct RunDimensions: Equatable {
             dataHealthText = "未知"
         }
         return RunDimensions(executionStatus: status,
+                              goalControl: goalControl,
                               attentionSummary: attention,
                               dataHealth: dataHealthText)
     }

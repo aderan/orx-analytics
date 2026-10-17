@@ -1,7 +1,10 @@
 # 版本兼容与来源能力
 
 软件版本、ORX 数据 schema、analytics 存储 schema 独立演进。
-orx-analytics 0.4.1 支持以下明确的数据版本，不按“大于等于”推测兼容。
+orx-analytics 0.4.2 支持以下明确的数据版本，不按“大于等于”推测兼容。
+**经验证的兼容组合：ORX v0.4.0 + orx-analytics v0.4.2**（ORX 软件
+版本 0.4.0、ORX schema v15、analytics 0.4.2、store v3——四条版本轴
+各自独立，两个仓库的软件版本不必同号）。
 
 | ORX schema | 本工具读取能力 |
 |---|---|
@@ -10,13 +13,27 @@ orx-analytics 0.4.1 支持以下明确的数据版本，不按“大于等于”
 | 10 | 另含显式 attempt progress |
 | 11 | 另含指派 nonce 身份锚 |
 | 12 | 保留 v11 形状；接受用量来源 `zcode_db` |
+| 13 | 保留 v12 形状；`goals.status` 新增 `paused`（非终态，读原文） |
+| 14 | 保留 v13 形状；`goals.status` 新增 `cancelling`（非终态，读原文） |
+| 15 | 保留 v14 形状；新增 `completion_receipts` 回执表 |
 | 其他、缺失或非法值 | 拒绝，不迁移、不补列、不改版本号 |
 
-analytics 自己的 store 版本为 2，可以迁移其 v1 数据；无法读取未知未来
-版本。ORX 的读取语义由
+analytics 自己的 store 版本为 3，可以将 v1/v2 数据原地进行增量迁移；
+无法读取未知未来版本。ORX 的读取语义由
 [ORX observability contract](https://github.com/aderan/orx/blob/main/docs/observability-contract.md)
 定义。本仓的指标与关联分别以 [metrics.md](metrics.md) 和
 [correlation.md](correlation.md) 为准。
+
+### v13/v14/v15 的读取边界（G010 生命周期管理）
+
+- Goal 状态始终读 `goals.status` 原文，不从 run 聚合推导；
+  `paused`（展示“已暂停”）与 `cancelling`（展示“取消中”）均为
+  非终态，占用唯一的未完成 Goal 槽位；Goal 控制状态与 Run/attempt
+  执行事实分层呈现，互不改写。
+- v15 的 `completion_receipts` 只镜像回执**事实**（digest、身份、
+  交付状态、时间），不镜像 `receipt_json` 重放负载——回执是给补交
+  方的重放面，本工具只读不重放。本工具不因此获得任何调度、恢复或
+  迁移权限（源库永远 `mode=ro` + `query_only`）。
 
 ## 来源和平台
 
@@ -45,7 +62,7 @@ macOS，Windows 来源和 watcher 尚未纳入验收。
 
 扩大版本支持前应检查 ORX 契约修正，更新 probe/importer 与对应样本测试。
 若规范观测来源或指标定义变化，同时检查报告、异常规则和证据包复算，
-避免同一份数据出现不同结论。0.4.1 的规范来源优先级为
+避免同一份数据出现不同结论。0.4.2 的规范来源优先级为
 `native_cli > zcode_db > host_report > output_estimate`，同级取最小观测 id。
 
 CI 验证确定性样本、源码包和独立 wheel 安装；不需要真实来源、不调用模型。

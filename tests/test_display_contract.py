@@ -54,9 +54,23 @@ class TestStatusMapping:
         assert display.is_terminal(display.goal_status("cancelled"))
 
     def test_run_design_labels_present(self):
-        # the design's §4 vocabulary must exist for known facts
+        # the design's §4 vocabulary must exist for known facts; G011 T002:
+        # run-level blocked is 受阻 semantics — 暂停 belongs to the GOAL
+        # control layer only (两个维度不共用词汇)
         labels = {display.run_status(v)["display"] for v in RUN_VALUES}
-        assert {"规划中", "执行中", "暂停", "完成"} <= labels
+        assert {"规划中", "执行中", "受阻", "完成"} <= labels
+        assert "暂停" not in labels
+
+    def test_blocked_and_paused_are_different_dimensions(self):
+        # G011 matrix §1: Run blocked = 受阻 (execution obstructed);
+        # Goal paused = 已暂停 (control-level pause). Never one word for both.
+        assert display.run_status("blocked")["display"] == "受阻"
+        assert display.task_status("blocked")["display"] == "受阻"
+        assert display.goal_status("paused")["display"] == "已暂停"
+        run_labels = {display.run_status(v)["display"] for v in RUN_VALUES}
+        goal_labels = {display.goal_status(v)["display"] for v in GOAL_VALUES}
+        assert "已暂停" not in run_labels
+        assert "受阻" not in goal_labels
 
     def test_task_design_labels_present(self):
         labels = {display.task_status(v)["display"] for v in TASK_VALUES}
@@ -191,3 +205,98 @@ class TestDataHealth:
                    display.HEALTH_UNREADABLE, display.HEALTH_UNSUPPORTED,
                    display.HEALTH_UNKNOWN}
         assert statuses & healths == set()
+
+
+class TestLifecycleView:
+    """G011 T002 lifecycle matrix (docs/diagnostics/g011/lifecycle-matrix.md):
+    the Goal control layer and the Run execution layer combine into one
+    overview bucket + attention eligibility. `lifecycle_view` is the ONE
+    classification point — it never rewrites either raw status."""
+
+    def view(self, goal_raw, run_raw):
+        goal = display.goal_status(goal_raw) if goal_raw is not None else None
+        return display.lifecycle_view(goal, display.run_status(run_raw))
+
+    def test_matrix_buckets(self):
+        # (goal control, run facts) -> bucket; H == historical (query-only)
+        M = {
+            ("active", "planning"): "active",
+            ("active", "running"): "active",
+            ("active", "blocked"): "active",
+            ("active", "done"): "recent_completed",
+            ("paused", "running"): "active",
+            ("paused", "done"): "recent_completed",
+            ("cancelling", "running"): "active",
+            ("cancelling", "blocked"): "active",
+            ("cancelling", "done"): "historical",
+            ("cancelled", "running"): "historical",
+            ("cancelled", "blocked"): "historical",
+            ("cancelled", "done"): "historical",
+            ("cancelled", "planning"): "historical",
+            ("done", "done"): "recent_completed",
+            ("done", "running"): "active",
+        }
+        for (goal_raw, run_raw), bucket in M.items():
+            v = self.view(goal_raw, run_raw)
+            assert v["bucket"] == bucket, (goal_raw, run_raw, v)
+
+    def test_cancelled_goal_never_earns_attention(self):
+        # 已取消不进入失败关注：every execution fact under a KNOWN
+        # cancelled goal is history — not a current anomaly
+        for run_raw in ("blocked", "running", "done", "weird"):
+            assert self.view("cancelled", run_raw)["attention"] is False
+
+    def test_unfinished_control_states_keep_attention(self):
+        # paused / cancelling / done / active control states do not change
+        # the attention caliber: a blocked run or failed task is still a
+        # current execution fact (matrix §3)
+        for goal_raw in ("active", "paused", "cancelling", "done"):
+            for run_raw in ("blocked", "running", "done"):
+                assert self.view(goal_raw, run_raw)["attention"] is True
+
+    def test_paused_and_cancelling_are_unfinished_control_states(self):
+        for goal_raw in ("paused", "cancelling"):
+            v = self.view(goal_raw, "running")
+            assert v["bucket"] == "active"
+            assert v["goal_control"] == goal_raw
+
+    def test_run_done_during_pause_is_not_goal_done(self):
+        # 暂停期间 Run done：execution fact completed, control layer stays
+        # paused — the view keeps both layers apart
+        v = self.view("paused", "done")
+        assert v["bucket"] == "recent_completed"
+        assert v["goal_control"] == "paused"
+
+    def test_cancelling_keeps_unclosed_execution(self):
+        # 取消中保留尚未关闭执行的事实：a still-running run stays in the
+        # active bucket with the cancelling control state
+        v = self.view("cancelling", "running")
+        assert v["bucket"] == "active"
+        assert v["goal_control"] == "cancelling"
+
+    def test_unknown_never_guessed_terminal(self):
+        # unknown control or unknown execution values fall back to the
+        # execution facts and are never terminal (matrix §5)
+        for run_raw in ("running", "weird", ""):
+            v = self.view("weird-goal", run_raw)
+            assert v["bucket"] == "active"
+            assert v["goal_control"] == "unknown"
+            assert v["attention"] is True
+        v = self.view("active", "weird")
+        assert v["bucket"] == "active"
+        assert v["goal_control"] == "active"
+
+    def test_missing_goal_row_falls_back_to_execution_facts(self):
+        v = display.lifecycle_view(None, display.run_status("blocked"))
+        assert v["bucket"] == "active"
+        assert v["attention"] is True
+        assert v["goal_control"] is None
+        done = display.lifecycle_view(None, display.run_status("done"))
+        assert done["bucket"] == "recent_completed"
+
+    def test_view_never_rewrites_raw_statuses(self):
+        goal = display.goal_status("paused")
+        run = display.run_status("running")
+        before = (goal["raw"], run["raw"])
+        display.lifecycle_view(goal, run)
+        assert (goal["raw"], run["raw"]) == before

@@ -35,6 +35,20 @@ final class NotificationPolicyTests: XCTestCase {
                        .lowConfidence)
     }
 
+    func testLifecycleControlStatesNeverBecomeNotifiableKinds() {
+        // G011 matrix §3: 控制态是徽标，不是异常。Cancelled goals never
+        // notify (the engine emits no attention for them), and pause or
+        // cancel states must never be added as alert kinds. Any future
+        // lifecycle kind stays low-confidence until explicitly promoted.
+        XCTAssertEqual(NotificationPolicy.factBasedKinds,
+                       ["failed_task", "blocked_run"])
+        for kind in ["goal_cancelled", "goal_paused", "goal_cancelling",
+                     "run_cancelled", "cancelling_goal", "paused_goal"] {
+            XCTAssertEqual(NotificationPolicy.confidence(forKind: kind),
+                           .lowConfidence, "\(kind) 不得成为通知类型")
+        }
+    }
+
     // MARK: baseline + dedup
 
     func testFirstRoundIsBaselineNoNotification() {

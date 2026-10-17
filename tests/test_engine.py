@@ -498,6 +498,58 @@ def test_active_runs_raise_the_tier_without_any_client(home, proj):
         e.release()
 
 
+def test_cancelled_goal_does_not_hold_the_active_tier(home, proj):
+    """G011 分层计数：cancelled Goal 下的 Run 不再算活动执行.
+
+    The tier's active-run count follows the lifecycle matrix — a run whose
+    GOAL control state is cancelled leaves the active cadence even while
+    its raw run status is still 'running' (the status itself is never
+    rewritten)."""
+    register(home, proj)
+    clock = FakeClock()
+    e = eng.Engine(home, clock=clock)
+    e.acquire()
+    try:
+        import sqlite3
+        db = proj / ".orx" / "state.db"
+
+        def set_state(goal_status: str | None, run_status: str | None) -> None:
+            conn = sqlite3.connect(db)
+            if goal_status is not None:
+                conn.execute("UPDATE goals SET status=?", (goal_status,))
+            if run_status is not None:
+                conn.execute("UPDATE runs SET status=?", (run_status,))
+            conn.commit()
+            conn.close()
+            os.utime(db, None)             # signature change -> re-import
+
+        e.tick()
+        assert e.tier()[0] == "idle"        # base fixture: R001 done
+        # run running under an active goal -> active cadence
+        set_state("active", "running")
+        clock.advance(60)
+        e.tick()
+        assert e.tier()[0] == "active"
+        # paused control state: the run keeps executing (in-flight work is
+        # not starved) -> still the active cadence
+        set_state("paused", None)
+        clock.advance(60)
+        e.tick()
+        assert e.tier()[0] == "active"
+        # goal cancelled while the run row still says running -> the run is
+        # history, not a current execution; the raw run status is untouched
+        set_state("cancelled", None)
+        clock.advance(60)
+        e.tick()
+        assert e.tier()[0] == "idle"
+        conn = sqlite3.connect(db)
+        raw = conn.execute("SELECT status FROM runs").fetchone()[0]
+        conn.close()
+        assert raw == "running"             # never rewritten by analytics
+    finally:
+        e.release()
+
+
 def test_sleep_wake_no_stall_verdict_and_resync(home, proj):
     """睡眠期间不判停摆、唤醒后重新同步."""
     register(home, proj)

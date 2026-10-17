@@ -767,3 +767,207 @@ def test_validate_refresh_request():
     with pytest.raises(ValueError):
         query_model.validate_refresh_request(
             {"op": "refresh.request", "projects": [7]})
+
+
+# ------------------------------------------------- lifecycle layering (G011) ---
+# docs/diagnostics/g011/lifecycle-matrix.md: the Goal control state and the
+# Run execution facts are two explicit layers. Grouping, attention, counting
+# and badges follow the matrix; the raw statuses are never rewritten.
+
+
+@pytest.fixture()
+def lw(tmp_path):
+    """A lifecycle world: one project whose snapshot carries every matrix
+    cell as its own goal — paused, cancelling, cancelled, done and an
+    unrecognized control value, each with run/task/attempt facts."""
+    from orxanalytics.store import Store
+
+    proj = tmp_path / "ProjL"
+    (proj / ".orx").mkdir(parents=True)
+    make_orx_db(proj / ".orx" / "state.db")
+    store = Store(tmp_path / "analytics-home")
+    import_orx_project(store, str(proj))
+    registry.add_project(store, str(proj))
+    seed_lifecycle(store, str(proj))
+    return {"store": store, "proj": str(proj)}
+
+
+def seed_lifecycle(store, proj: str) -> None:
+    snap = correlate.latest_snapshot(store, proj)
+    conn = store.conn
+    goals = [
+        ("G100", "lifecycle paused goal", "paused"),
+        ("G101", "lifecycle cancelling goal", "cancelling"),
+        ("G102", "lifecycle cancelled goal", "cancelled"),
+        ("G103", "lifecycle done goal", "done"),
+        ("G104", "lifecycle unknown control goal", "hibernating"),
+    ]
+    conn.executemany(
+        "INSERT INTO orx_goals VALUES (?,?,?,?,?,?,?,?,?)",
+        [(snap, gid, obj, st, "", "[]", "[]", T(0), T(150))
+         for gid, obj, st in goals])
+    # one run per matrix cell; goal G001/R001 from the base fixture stays
+    # as the active-goal reference (done run)
+    runs = [
+        # paused/running and paused/done
+        ("R100", "G100", "running", T(0), T(121), T(100), None),
+        ("R101", "G100", "done", T(0), T(145), T(130), T(140)),
+        # cancelling with an UNCLOSED execution; cancelling/done is history
+        ("R110", "G101", "running", T(0), T(122), T(101), None),
+        ("R111", "G101", "done", T(0), T(146), T(130), T(141)),
+        # cancelled: blocked run with a failed task, and a done run
+        ("R120", "G102", "blocked", T(0), T(123), T(102), None),
+        ("R121", "G102", "done", T(0), T(147), T(130), T(142)),
+        # done/done
+        ("R130", "G103", "done", T(0), T(148), T(130), T(143)),
+        # unknown control value over a running execution fact
+        ("R140", "G104", "running", T(0), T(124), T(103), None),
+    ]
+    conn.executemany("INSERT INTO orx_runs VALUES (?,?,?,?,?,?,?,?)",
+                     [(snap, *row) for row in runs])
+    conn.executemany(
+        "INSERT INTO orx_revisions VALUES (?,?,?,?,?,?,?,?)",
+        [(snap, rid, run, 1, 1, "planner-l", "active", T(90))
+         for rid, run in ((50, "R100"), (51, "R101"), (52, "R110"),
+                          (53, "R111"), (54, "R120"), (55, "R121"),
+                          (56, "R130"), (57, "R140"))])
+    tasks = [
+        # the cancelling goal's unconfirmed worker execution: task running,
+        # attempt still open (ended_at NULL, result NULL)
+        (140, 52, "T110", "unclosed execution under cancelling", "running",
+         None, T(91), T(122)),
+        # the cancelled goal's failed task: a REAL historical failure with
+        # usage, never a current attention fact
+        (150, 54, "T120", "failed task under cancelled goal", "failed",
+         "boom", T(91), T(120)),
+    ]
+    conn.executemany("INSERT INTO orx_tasks VALUES (?,?,?,?,?,?,?,?,?)",
+                     [(snap, *t) for t in tasks])
+    attempts = [
+        (340, 52, "T110", "worker", "zcode-worker", "host", "zcode", "m9",
+         T(92), None, None, None, "R110", None),
+        (350, 54, "T120", "worker", "zcode-worker", "host", "zcode", "m9",
+         T(92), T(115), "failed", "boom", "R120", None),
+    ]
+    conn.executemany(
+        "INSERT INTO orx_attempts(snapshot_id,id,revision_id,task_id,role,"
+        "profile,driver,harness,model,started_at,ended_at,result,"
+        "failure_reason,run_id,usage_missing_reason) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(snap, *row) for row in attempts])
+    conn.execute(
+        "INSERT INTO orx_usage_obs(snapshot_id,id,attempt_id,profile,run_id,"
+        "task_id,input_tokens,output_tokens,cached_input,source,accuracy,"
+        "created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (snap, 360, 350, "zcode-worker", "R120", "T120", 4000, 400, 0,
+         "native_cli", "exact", T(115)))
+    conn.commit()
+
+
+def _lifecycle_overview(lw):
+    return query_model.overview(lw["store"], now=FIXED_NOW, stale_after=90.0)
+
+
+def test_overview_groups_by_the_lifecycle_matrix(lw):
+    resp = _lifecycle_overview(lw)
+    active_ids = {a["run_id"] for a in resp["active"]}
+    # paused/running, cancelling/unclosed and unknown-control/running stay
+    # current executions; the base fixture's done R001 is recent, not active
+    assert active_ids == {"R100", "R110", "R140"}
+    recent_ids = {r["run_id"] for r in resp["recent_completed"]}
+    # paused/done (R101) and done/done (R130) are completions; cancelling/
+    # done (R111) and both cancelled runs (R120, R121) never aggregate as
+    # completions — they are history only
+    assert recent_ids == {"R001", "R101", "R130"}
+    listed = active_ids | recent_ids
+    assert {"R111", "R120", "R121"}.isdisjoint(listed)
+    # summary mirrors the lists exactly — one bucket per run, no double count
+    assert resp["summary"]["active_runs"] == len(resp["active"])
+    assert resp["summary"]["recent_completed"] == len(resp["recent_completed"])
+    assert resp["summary"]["attention"] == len(resp["attention"])
+
+
+def test_active_cards_carry_both_layers(lw):
+    resp = _lifecycle_overview(lw)
+    by_run = {a["run_id"]: a for a in resp["active"]}
+    # paused/running: execution fact 执行中, control badge 已暂停 — the two
+    # dimensions travel together and neither rewrites the other
+    assert by_run["R100"]["status"]["display"] == "执行中"
+    assert by_run["R100"]["goal"]["status"]["raw"] == "paused"
+    assert by_run["R100"]["goal"]["status"]["display"] == "已暂停"
+    # cancelling keeps the unclosed execution visible with its control state
+    assert by_run["R110"]["status"]["raw"] == "running"
+    assert by_run["R110"]["goal"]["status"]["display"] == "取消中"
+    # an unrecognized control value stays unknown, never guessed terminal
+    assert by_run["R140"]["goal"]["status"]["known"] is False
+    assert by_run["R140"]["goal"]["status"]["display"] == display.UNKNOWN_LABEL
+    codes = {w["code"] for w in resp["warnings"]}
+    assert "unknown-goal-status" in codes
+
+
+def test_run_done_during_pause_is_not_goal_done(lw):
+    resp = _lifecycle_overview(lw)
+    recent = {r["run_id"]: r for r in resp["recent_completed"]}
+    # paused/done: the run completed as an execution fact, but the item
+    # still carries the paused control layer — it never masquerades as a
+    # goal completion (R130 is the only done-goal completion here)
+    assert recent["R101"]["status"]["display"] == "完成"
+    assert recent["R101"]["goal"]["status"]["raw"] == "paused"
+    assert recent["R101"]["goal"]["status"]["display"] == "已暂停"
+    assert recent["R130"]["goal"]["status"]["raw"] == "done"
+
+
+def test_cancelling_keeps_the_unclosed_execution_facts(lw):
+    resp = _lifecycle_overview(lw)
+    card = next(a for a in resp["active"] if a["run_id"] == "R110")
+    assert card["goal"]["status"]["raw"] == "cancelling"
+    detail = query_model.runs_get(lw["store"], lw["proj"], "R110",
+                                  now=FIXED_NOW)
+    task = next(t for t in detail["tasks"] if t["task_id"] == "T110")
+    assert task["status"]["raw"] == "running"
+    open_atts = usage_readmodel.task_usage(
+        lw["store"], lw["proj"], "R110", 52, "T110")["attempts"]
+    assert open_atts and open_atts[0]["result"] is None
+
+
+def test_cancelled_goal_never_earns_attention(lw):
+    resp = _lifecycle_overview(lw)
+    # R120 is a blocked run with a genuinely failed task, but the goal is
+    # cancelled: no blocked_run, no failed_task, nothing to notify
+    for item in resp["attention"]:
+        assert item["run_id"] not in {"R120", "R121", "R111"}
+    assert resp["attention"] == []
+
+
+def test_cancelled_history_failures_and_usage_stay_queryable(lw):
+    store, proj = lw["store"], lw["proj"]
+    blocked = query_model.runs_list(store, project=proj, status="blocked",
+                                    now=FIXED_NOW)
+    assert [r["run_id"] for r in blocked["runs"]] == ["R120"]
+    assert blocked["runs"][0]["goal"]["status"]["display"] == "已取消"
+    detail = query_model.runs_get(store, proj, "R120", now=FIXED_NOW)
+    task = next(t for t in detail["tasks"] if t["task_id"] == "T120")
+    assert task["status"]["raw"] == "failed"
+    assert task["failure_reason"] == "boom"
+    assert task["consumption"]["tokens"]["input_tokens"] == 4000
+    task_detail = query_model.tasks_get(store, proj, "R120", 54, "T120",
+                                        now=FIXED_NOW)
+    assert task_detail["retry"]["failing_attempt_ids"] == [350]
+    assert task_detail["usage"]["tokens"]["input_tokens"] == 4000
+    # the raw statuses are untouched by every read
+    row = store.conn.execute(
+        "SELECT status FROM orx_runs WHERE snapshot_id=("
+        "SELECT MAX(snapshot_id) FROM orx_runs) AND id='R120'").fetchone()
+    assert row["status"] == "blocked"
+
+
+def test_runs_list_shows_both_dimensions_for_lifecycle_rows(lw):
+    resp = query_model.runs_list(lw["store"], project=lw["proj"],
+                                 now=FIXED_NOW)
+    by_run = {r["run_id"]: r for r in resp["runs"]}
+    # run blocked under an active control state is 受阻 (execution layer);
+    # the control layer rides along as its own status block
+    assert by_run["R120"]["status"]["display"] == "受阻"
+    assert by_run["R120"]["goal"]["status"]["display"] == "已取消"
+    assert by_run["R100"]["status"]["display"] == "执行中"
+    assert by_run["R100"]["goal"]["status"]["display"] == "已暂停"

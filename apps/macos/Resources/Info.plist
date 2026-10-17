@@ -27,5 +27,16 @@
 	<false/>
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
+	<!-- Channel identity (G011 T005). This checked-in plist marks the
+	     SwiftPM/swift-run binary as a DEVELOPMENT build — not a
+	     distribution artifact. Distribution builds generate their own
+	     Info.plist via scripts/build_app.sh with the real channel,
+	     audience, Gatekeeper notice and complete source commit. -->
+	<key>ORXAnalyticsChannel</key>
+	<string>development</string>
+	<key>ORXAnalyticsChannelAudience</key>
+	<string>developer machine only (swift run; not a distribution artifact)</string>
+	<key>ORXAnalyticsGatekeeperNotice</key>
+	<string>Development build: unsigned or ad-hoc, not notarized; do not distribute.</string>
 </dict>
 </plist>

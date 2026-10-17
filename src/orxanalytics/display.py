@@ -10,6 +10,13 @@ docs/menubar-app-design.md §2/§4 frozen rules:
   task_id, Attempt = Project + the source database's attempt row id.
 - Data health (正常/更新延迟/来源不可读/版本不支持) is a third dimension,
   separate from execution status and attention by construction.
+- Lifecycle layering (G011, docs/diagnostics/g011/lifecycle-matrix.md):
+  the Goal control state (goals.status) and the Run execution facts
+  (runs.status) are two explicit layers. ``lifecycle_view`` is the single
+  classification point — it combines both into overview grouping and
+  attention eligibility WITHOUT rewriting either raw status. Run blocked
+  is 受阻 (execution obstructed); Goal paused is 已暂停 (control-level
+  pause): the vocabularies never mix.
 """
 
 from __future__ import annotations
@@ -21,7 +28,7 @@ UNKNOWN_LABEL = "未知状态"
 RUN_DISPLAY: dict[str, str] = {
     "planning": "规划中",
     "running": "执行中",
-    "blocked": "暂停",
+    "blocked": "受阻",
     "done": "完成",
 }
 
@@ -80,6 +87,69 @@ def is_terminal(status: dict) -> bool:
     """True only for a KNOWN terminal display (完成/失败/已取消). An
     unknown value is never terminal — it is not a verdict."""
     return status["known"] and status["display"] in _TERMINAL_DISPLAY
+
+
+# ------------------------------------------------------ lifecycle layering ---
+
+#: Goal control states that end lifecycle visibility in the CURRENT lists
+#: (matrix §2): a cancelled Goal is history-only — never current active,
+#: never attention, never a notification.
+GOAL_CANCELLED = "cancelled"
+
+
+def lifecycle_view(goal_status: dict | None,
+                   run_status: dict) -> dict:
+    """Layered lifecycle classification of one run (G011 matrix).
+
+    Inputs are display status BLOCKS (``goal_status`` may be ``None`` when
+    there is no Goal row at all — the control layer is simply absent).
+    The function never mutates either block; it only decides how the two
+    layers combine:
+
+    - ``bucket``: ``"active"`` (进行中), ``"recent_completed"`` (最近完成)
+      or ``"historical"`` (query-only — never in the panel's current
+      lists, fully queryable through runs.list / runs.get / tasks.get).
+    - ``attention``: whether execution facts of this run may feed the
+      attention list (blocked runs, current failed tasks). False only for
+      a KNOWN cancelled Goal: its failures are history, not alerts.
+    - ``goal_control``: ``active|paused|cancelling|cancelled|done|
+      "unknown"`` — or ``None`` when no Goal row exists.
+
+    Rules (docs/diagnostics/g011/lifecycle-matrix.md §2):
+
+    - A KNOWN cancelled Goal is historical under EVERY execution fact —
+      a cancel never destroys history, it only ends current visibility.
+    - Otherwise a NON-terminal run status groups into the active bucket —
+      a paused Goal does not starve in-flight executions and a cancelling
+      Goal keeps its not-yet-closed executions visible (the wrap-up is
+      pending), each with its control badge.
+    - A terminal run status reaches recent_completed only when the
+      control layer is not cancelling/cancelled: a completion racing a
+      cancel keeps its facts but never aggregates as a completion, and a
+      run finishing DURING a pause stays recent while its Goal control
+      layer remains paused (it never masquerades as a Goal completion).
+    - Unknown values (either layer) are never guessed terminal: grouping
+      falls back to the execution facts, with the control layer unknown.
+    """
+    if goal_status is not None and goal_status["known"]:
+        control = goal_status["raw"]
+    elif goal_status is not None:
+        control = "unknown"
+    else:
+        control = None
+    if control == GOAL_CANCELLED:
+        bucket = "historical"
+    elif not is_terminal(run_status):
+        bucket = "active"
+    elif run_status["raw"] == "done" and control != "cancelling":
+        bucket = "recent_completed"
+    else:
+        bucket = "historical"
+    return {
+        "bucket": bucket,
+        "attention": control != GOAL_CANCELLED,
+        "goal_control": control,
+    }
 
 
 def project_key(root: str | Path) -> str:

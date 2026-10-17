@@ -17,6 +17,10 @@ import Foundation
 ///   SEPARATE fields (`run.progress` vs `run.consumption`); there is no
 ///   combined value (`combinedProgressConsumpletion` stays nil) and no
 ///   percentage is fabricated.
+/// - Lifecycle layering (G011): which SECTION a run lands in is the
+///   ENGINE's classification (a cancelled Goal's runs arrive in no
+///   current list); the Goal control layer travels beside the run
+///   status as `controlStatus` — two dimensions, never rewritten.
 public struct PanelRunCard: Equatable, Identifiable {
     public let run: OverviewRunItem
     public let attention: [AttentionItem]
@@ -26,6 +30,20 @@ public struct PanelRunCard: Equatable, Identifiable {
     /// Always nil. Exists so tests (and readers) can assert that this
     /// model never fabricates a combined progress/consumption number.
     public var combinedProgressConsumption: String? { nil }
+
+    /// The Goal CONTROL layer of this card (已暂停/取消中/已取消/…),
+    /// beside the execution facts of `run.status`. Nil when the engine
+    /// carried no goal block (legacy payload) — never guessed.
+    public var controlStatus: DisplayStatus? { run.goal?.status }
+
+    /// Compact badge text for the card header: "目标 已暂停". Nil when
+    /// the control layer is absent or plain active (nothing to
+    /// distinguish) or unknown (never guessed).
+    public var controlBadgeText: String? {
+        guard let control = controlStatus, control.known,
+              control.raw != "active" else { return nil }
+        return "目标 \(control.display)"
+    }
 }
 
 public enum PanelSection: Equatable {
@@ -107,5 +125,25 @@ public struct PanelModel: Equatable {
     /// the overview carried one.
     public func health(for project: String) -> DataHealthBlock? {
         healthByProject[project]
+    }
+
+    /// Counts of the INTERESTING Goal control states among the active
+    /// section (已暂停 / 取消中 / 已取消 / 已完成, in that fixed order) —
+    /// the status line summarizes the control layer without touching run
+    /// facts. Plain-active and unknown control states add no noise, and
+    /// a control state is never counted twice.
+    public var activeControlCounts: [(label: String, count: Int)] {
+        let order = ["paused", "cancelling", "cancelled", "done"]
+        var counts: [String: Int] = [:]
+        var labels: [String: String] = [:]
+        for card in active {
+            guard let status = card.controlStatus, status.known,
+                  let raw = status.raw, order.contains(raw) else { continue }
+            counts[raw, default: 0] += 1
+            labels[raw] = status.display
+        }
+        return order.compactMap { raw in
+            counts[raw].map { (labels[raw] ?? raw, $0) }
+        }
     }
 }

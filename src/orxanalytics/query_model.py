@@ -369,7 +369,7 @@ def _attention_for_run(key: str, run: dict, ctx: dict) -> list[dict]:
     if run["status"] == "blocked":
         out.append({"kind": "blocked_run", "project": key,
                     "run_id": run["id"], "raw_status": run["status"],
-                    "detail": "run blocked (暂停)"})
+                    "detail": "run blocked (受阻)"})
     revs = ctx["revs_by_run"].get(run["id"], [])
     if not revs:
         return out
@@ -770,7 +770,13 @@ def overview(store: Store, *, now: datetime | None = None,
     """Menu-bar quick panel data: active runs, attention items, recent
     completions, per-source health. One Run appears once per project;
     attention is current-facts only (a failed round that a successor
-    already replaced is history, §4)."""
+    already replaced is history, §4). Grouping follows the G011 lifecycle
+    matrix (display.lifecycle_view): the Goal control layer and the Run
+    execution facts are combined — a cancelled Goal is history-only (never
+    active, never attention, never notified), a paused Goal keeps its
+    in-flight runs current with an 已暂停 badge, a cancelling Goal keeps
+    its not-yet-closed executions visible, and a run finishing during a
+    pause stays recent WITHOUT masquerading as a Goal completion."""
     now = _now_dt(now)
     warnings: list[dict] = []
     keys = sorted(p["project_key"] for p in _registry_projects(store))
@@ -809,11 +815,20 @@ def overview(store: Store, *, now: datetime | None = None,
                 _warn_once(warnings, "unknown-run-status", key,
                            f"run {run['id']} raw status "
                            f"{run['status']!r} is not recognized")
-            if not display.is_terminal(st):
-                active.append(_run_item(key, run, ctx, row))
-            elif run["status"] == "done":
-                recent.append(_run_item(key, run, ctx, row))
-            attention.extend(_attention_for_run(key, run, ctx))
+            goal = ctx["goals"].get(run["goal_id"]) if run["goal_id"] else None
+            goal_st = display.goal_status(goal["status"]) if goal else None
+            if goal is not None and not goal_st["known"]:
+                _warn_once(warnings, "unknown-goal-status", key,
+                           f"goal {run['goal_id']} raw status "
+                           f"{goal['status']!r} is not recognized")
+            view = display.lifecycle_view(goal_st, st)
+            item = _run_item(key, run, ctx, row)
+            if view["bucket"] == "active":
+                active.append(item)
+            elif view["bucket"] == "recent_completed":
+                recent.append(item)
+            if view["attention"]:
+                attention.extend(_attention_for_run(key, run, ctx))
     active = _sort_stable(
         active, lambda it: _epoch_ms(it["time_basis"]["value"]), "desc")
     recent = _sort_stable(recent, lambda it: _epoch_ms(it["completed_at"]),

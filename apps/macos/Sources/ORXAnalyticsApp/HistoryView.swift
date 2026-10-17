@@ -231,6 +231,14 @@ private struct HistoryRunRowView: View {
                         Text(row.run.runID)
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
+                        // G011 分层：控制层徽标与执行状态并列（已取消的历史
+                        // 行保留其控制层可见）
+                        if let control = row.goalControlText {
+                            Text("目标\(control)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .help("Goal 控制状态（与执行状态分立）")
+                        }
                         Text(row.run.status.display)
                             .font(.caption)
                             .foregroundStyle(row.run.status.known ? .primary : .secondary)

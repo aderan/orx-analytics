@@ -226,7 +226,61 @@ final class HistoryModelTests: XCTestCase {
     func testStatusOptionsAreTheDisplayContractRawValues() {
         let raws = Set(HistoryStatusOption.known.map(\.raw))
         XCTAssertEqual(raws, ["planning", "running", "blocked", "done"],
-                       "状态选项来自 display 契约的 raw 值（规划中/执行中/暂停/完成）")
+                       "状态选项来自 display 契约的 raw 值（规划中/执行中/受阻/完成）")
+        // G011: run-level blocked is 受阻 semantics — 暂停 belongs to the
+        // GOAL control layer only
+        let labels = Set(HistoryStatusOption.known.map(\.label))
+        XCTAssertEqual(labels, ["规划中", "执行中", "受阻", "完成"])
+    }
+
+    /// G011 分层：历史列表每一行能同时辨认两个维度——执行事实
+    /// （run.status）与 Goal 控制状态（goal.status 徽标文本）。
+    func testRowsCarryGoalControlBesideRunStatus() {
+        let blocked = RunFacts(
+            project: "/tmp/p", runID: "R120",
+            goal: GoalBlock(id: "G102", objective: "已取消目标",
+                            status: DisplayStatus(raw: "cancelled", known: true,
+                                                  display: "已取消")),
+            status: DisplayStatus(raw: "blocked", known: true, display: "受阻"),
+            startedAt: "2026-10-01T09:00:00+00:00",
+            completedAt: nil, updatedAt: nil, createdAt: nil,
+            timeBasis: nil, progress: nil, consumption: nil,
+            dataAsOf: nil, schemaVersion: nil)
+        let row = HistoryRunRow.build(blocked, sortKey: "started_at")
+        XCTAssertEqual(row.run.status.display, "受阻")
+        XCTAssertEqual(row.goalControlText, "已取消",
+                       "已取消的执行保留在历史中，控制层照常可见")
+
+        let pausedRun = RunFacts(
+            project: "/tmp/p", runID: "R100",
+            goal: GoalBlock(id: "G100", objective: "暂停目标",
+                            status: DisplayStatus(raw: "paused", known: true,
+                                                  display: "已暂停")),
+            status: DisplayStatus(raw: "running", known: true, display: "执行中"),
+            startedAt: "2026-10-01T09:00:00+00:00",
+            completedAt: nil, updatedAt: nil, createdAt: nil,
+            timeBasis: nil, progress: nil, consumption: nil,
+            dataAsOf: nil, schemaVersion: nil)
+        XCTAssertEqual(HistoryRunRow.build(pausedRun, sortKey: "started_at")
+                        .goalControlText, "已暂停")
+
+        // no goal row / unknown control value: the control layer is
+        // absent, never guessed
+        XCTAssertNil(HistoryRunRow.build(
+            Self.run(project: "/tmp/p", runID: "R001", tokens: 5),
+            sortKey: "started_at").goalControlText)
+        let weird = RunFacts(
+            project: "/tmp/p", runID: "R140",
+            goal: GoalBlock(id: "G104", objective: nil,
+                            status: DisplayStatus(raw: "hibernating",
+                                                  known: false,
+                                                  display: "未知状态")),
+            status: DisplayStatus(raw: "running", known: true, display: "执行中"),
+            startedAt: nil, completedAt: nil, updatedAt: nil, createdAt: nil,
+            timeBasis: nil, progress: nil, consumption: nil,
+            dataAsOf: nil, schemaVersion: nil)
+        XCTAssertNil(HistoryRunRow.build(weird, sortKey: "started_at")
+                        .goalControlText, "未知控制值不猜成任何终态")
     }
 
     func testSortKeysMirrorEngineSortKeys() {

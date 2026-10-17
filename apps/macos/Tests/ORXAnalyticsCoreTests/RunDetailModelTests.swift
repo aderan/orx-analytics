@@ -194,6 +194,51 @@ final class RunDetailModelTests: XCTestCase {
         XCTAssertEqual(dims3.dataHealth, "未知")
     }
 
+    /// G011 分层：详情页的执行概况同时暴露 Goal 控制层与 Run 执行事实
+    /// （matrix §1/§2 — 两个维度并列，互不改写）。
+    func testRunDimensionsExposeGoalControlLayer() {
+        let pausedRun = RunFacts(
+            project: "/tmp/projL", runID: "R100",
+            goal: GoalBlock(id: "G100", objective: "暂停目标",
+                            status: DisplayStatus(raw: "paused", known: true,
+                                                  display: "已暂停")),
+            status: DisplayStatus(raw: "running", known: true, display: "执行中"),
+            startedAt: nil, completedAt: nil, updatedAt: nil, createdAt: nil,
+            timeBasis: nil, progress: nil, consumption: nil,
+            dataAsOf: nil, schemaVersion: nil)
+        let dims = RunDimensions.build(run: pausedRun, tasks: [], health: nil,
+                                       snapshots: [:], project: "/tmp/projL")
+        XCTAssertEqual(dims.executionStatus, "执行中")
+        XCTAssertEqual(dims.goalControl, "已暂停",
+                       "暂停目标下的在途执行：控制层已暂停，执行事实执行中")
+
+        let cancellingRun = RunFacts(
+            project: "/tmp/projL", runID: "R110",
+            goal: GoalBlock(id: "G101", objective: "取消中目标",
+                            status: DisplayStatus(raw: "cancelling", known: true,
+                                                  display: "取消中")),
+            status: DisplayStatus(raw: "running", known: true, display: "执行中"),
+            startedAt: nil, completedAt: nil, updatedAt: nil, createdAt: nil,
+            timeBasis: nil, progress: nil, consumption: nil,
+            dataAsOf: nil, schemaVersion: nil)
+        XCTAssertEqual(RunDimensions.build(run: cancellingRun, tasks: [],
+                                           health: nil, snapshots: [:],
+                                           project: "/tmp/projL").goalControl,
+                       "取消中")
+
+        // no goal row: the control layer is absent — 未知, never guessed
+        let noGoal = RunDimensions.build(
+            run: Self.fixtureRunDetail().run.map {
+                RunFacts(project: $0.project, runID: $0.runID, goal: nil,
+                         status: $0.status, startedAt: $0.startedAt,
+                         completedAt: $0.completedAt, updatedAt: $0.updatedAt,
+                         createdAt: $0.createdAt, timeBasis: $0.timeBasis,
+                         progress: $0.progress, consumption: $0.consumption,
+                         dataAsOf: $0.dataAsOf, schemaVersion: $0.schemaVersion)
+            }, tasks: [], health: nil, snapshots: [:], project: "/tmp/projA")
+        XCTAssertEqual(noGoal.goalControl, "未知")
+    }
+
     // MARK: fixtures
 
     nonisolated static func fixtureRunDetail() -> RunDetailEnvelope {

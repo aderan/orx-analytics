@@ -19,6 +19,8 @@ struct DiagnosticsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                channelSection
+                Divider()
                 engineSection
                 Divider()
                 dataSection
@@ -31,6 +33,51 @@ struct DiagnosticsView: View {
         .frame(minWidth: 480, minHeight: 420)
         .navigationTitle("诊断")
     }
+
+    // MARK: 构建渠道 (G011 T005)
+
+    /// The distribution channel this app was built for, read from the
+    /// app's own Info.plist. Shown honestly even when unlabeled — an
+    /// internal preview is never presented as a formal installer.
+    private var channelSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("构建渠道").font(.headline)
+            if let info = Self.channelInfo {
+                LabeledContent("渠道") { Text(info.summaryText) }
+                if let audience = info.audience {
+                    LabeledContent("受众") {
+                        Text(audience).foregroundStyle(.secondary)
+                    }
+                }
+                if let notice = info.gatekeeperNotice {
+                    LabeledContent("Gatekeeper 限制") {
+                        Text(notice).foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("来源提交") {
+                    Text(info.sourceCommit.map { commit in
+                        info.hasCompleteSourceCommit
+                            ? commit : "\(commit)（非完整提交）"
+                    } ?? "未记录")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                }
+                if info.isInternalPreview {
+                    Label("内部预览不是正式安装包：ad-hoc 签名、未公证，仅限内部测试。",
+                          systemImage: "person.crop.circle.badge.exclamationmark")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("未标注渠道（开发运行或旧构建）；不视为正式分发产物。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private static let channelInfo: AppChannelInfo? =
+        AppChannelInfo.from(infoDictionary: Bundle.main.infoDictionary ?? [:])
 
     // MARK: 引擎
 

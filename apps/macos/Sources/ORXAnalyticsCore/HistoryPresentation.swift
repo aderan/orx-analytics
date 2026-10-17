@@ -84,7 +84,7 @@ public struct HistoryStatusOption: Equatable, Identifiable {
     public static let known: [HistoryStatusOption] = [
         HistoryStatusOption(raw: "planning", label: "规划中"),
         HistoryStatusOption(raw: "running", label: "执行中"),
-        HistoryStatusOption(raw: "blocked", label: "暂停"),
+        HistoryStatusOption(raw: "blocked", label: "受阻"),
         HistoryStatusOption(raw: "done", label: "完成"),
     ]
 }
@@ -103,6 +103,11 @@ public struct HistoryStatusOption: Equatable, Identifiable {
 ///   "0".
 /// - The consumption shown is the run's ALL-REVISION total; current
 ///   plan progress is a separate expression and never mixed in.
+/// - Lifecycle layering (G011): `goalControlText` exposes the Goal
+///   CONTROL layer (已暂停/取消中/已取消/已完成) beside the execution
+///   status — two dimensions on every row. Nil when the control layer
+///   is absent or unknown (never guessed); a cancelled Goal's history
+///   rows stay queryable with their control layer visible.
 public struct HistoryRunRow: Equatable, Identifiable {
     public let run: RunFacts
     public let sortKey: String
@@ -116,6 +121,10 @@ public struct HistoryRunRow: Equatable, Identifiable {
     /// Honesty note for the consumption sort: unknown usage is sorted
     /// LAST by the engine and is not a small number.
     public let unknownNote: String?
+    /// Goal control-layer label (已暂停/取消中/已取消/已完成) or nil when
+    /// the control layer is absent/unknown — the raw statuses are never
+    /// rewritten and an unknown value is never guessed terminal.
+    public let goalControlText: String?
 
     public var id: String { run.id }
 
@@ -130,12 +139,20 @@ public struct HistoryRunRow: Equatable, Identifiable {
         } else {
             unknownNote = "用量未知"
         }
+        let control = run.goal?.status
+        let controlText: String?
+        if let control, control.known {
+            controlText = control.display
+        } else {
+            controlText = nil
+        }
         return HistoryRunRow(
             run: run,
             sortKey: sortKey,
             consumptionText: "已观测 token \(number)（全部版本）",
             coverageText: MetricsFormat.coverageText(run.consumption?.coverage),
             consumptionKnown: known,
-            unknownNote: unknownNote)
+            unknownNote: unknownNote,
+            goalControlText: controlText)
     }
 }
