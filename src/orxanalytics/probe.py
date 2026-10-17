@@ -29,7 +29,10 @@ CURSOR_GLOBAL = (
 # The ORX observability contract gate (ORX repo docs/observability-contract.md):
 # accept exactly these schema versions, refuse everything else. orxstate.py
 # imports this constant so the probe and the importer can never disagree.
-SUPPORTED_ORX_SCHEMA = {"8", "9", "10", "11", "12"}
+# v13 (goals.status +paused), v14 (+cancelling) and v15 (+completion_receipts)
+# are additive amendments recorded 2026-10-16 (G010); all three keep the
+# v11/v12 shape on every pre-existing table.
+SUPPORTED_ORX_SCHEMA = {"8", "9", "10", "11", "12", "13", "14", "15"}
 
 ZCODE_TABLE_FIELDS: dict[str, list[str]] = {
     "session": ["id", "parent_id", "directory", "project_id", "title",

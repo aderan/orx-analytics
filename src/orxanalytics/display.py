@@ -40,6 +40,8 @@ TASK_DISPLAY: dict[str, str] = {
 
 GOAL_DISPLAY: dict[str, str] = {
     "active": "进行中",
+    "paused": "已暂停",
+    "cancelling": "取消中",
     "done": "已完成",
     "cancelled": "已取消",
 }

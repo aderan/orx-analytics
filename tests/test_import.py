@@ -203,10 +203,146 @@ def test_orx_v12_file_imports_zcode_db_usage(world):
     assert c["output_tokens_sum"] == 10755 + 100 + 500 + 80
 
 
-def test_store_v1_upgrades_to_v2_adding_nonce_column(tmp_path):
-    """An existing analytics.db (store v1, orx_attempts without nonce) opens,
-    upgrades in place, and keeps its rows; a foreign future version still
-    refuses."""
+def test_orx_v13_file_imports_lifecycle_goal_states(world):
+    # v13 (G010 T002): goals.status CHECK widens with 'paused' — the table
+    # shape is v11/v12 otherwise. The raw goal state mirrors verbatim; it is
+    # read from goals.status, never derived from run aggregates.
+    v13 = world["tmp"] / "v13proj"
+    (v13 / ".orx").mkdir(parents=True)
+    from conftest import make_orx_db
+    make_orx_db(v13 / ".orx" / "state.db")
+    conn = sqlite3.connect(v13 / ".orx" / "state.db")
+    conn.execute("UPDATE meta SET value='13'")
+    conn.execute(
+        "CREATE TABLE attempt_progress (id INTEGER PRIMARY KEY "
+        "AUTOINCREMENT, attempt_id INTEGER NOT NULL, sequence INTEGER "
+        "NOT NULL, phase TEXT NOT NULL, message TEXT, received_at TEXT "
+        "NOT NULL, UNIQUE(attempt_id, sequence))")
+    conn.execute("ALTER TABLE attempts ADD COLUMN nonce TEXT")
+    conn.execute("UPDATE goals SET status='paused'")
+    conn.commit()
+    conn.close()
+    r = import_orx_project(world["store"], str(v13))
+    assert "error" not in r, r
+    assert r["counts"]["orx_replan_sources"] == 1      # v9 tables still kept
+    assert r["counts"]["orx_attempt_progress"] == 0    # v10 table still kept
+    assert "orx_receipts" not in r["counts"]           # receipts are v15-only
+    row = world["store"].conn.execute(
+        "SELECT status FROM orx_goals WHERE snapshot_id=?",
+        (r["snapshot_id"],)).fetchone()
+    assert row["status"] == "paused"                   # verbatim, not derived
+
+
+def test_orx_v15_file_imports_receipts(world):
+    # v15 (G010 T005): adds completion_receipts — one write-once receipt per
+    # accepted delivery, keyed by the UNIQUE attempt_id. Only receipt FACTS
+    # are mirrored; receipt_json (the verbatim replay payload) never is —
+    # analytics reads receipts, it never replays them.
+    v15 = world["tmp"] / "v15proj"
+    (v15 / ".orx").mkdir(parents=True)
+    from conftest import make_orx_db
+    make_orx_db(v15 / ".orx" / "state.db")
+    conn = sqlite3.connect(v15 / ".orx" / "state.db")
+    conn.execute("UPDATE meta SET value='15'")
+    conn.execute(
+        "CREATE TABLE attempt_progress (id INTEGER PRIMARY KEY "
+        "AUTOINCREMENT, attempt_id INTEGER NOT NULL, sequence INTEGER "
+        "NOT NULL, phase TEXT NOT NULL, message TEXT, received_at TEXT "
+        "NOT NULL, UNIQUE(attempt_id, sequence))")
+    conn.execute("ALTER TABLE attempts ADD COLUMN nonce TEXT")
+    conn.execute(
+        "UPDATE attempts SET nonce='orx-assignment:9c1d0a34-1e2f-4a3b-8c5d-"
+        "000000000201' WHERE id=201")
+    conn.execute("UPDATE goals SET status='cancelling'")
+    conn.execute(
+        "CREATE TABLE completion_receipts (id INTEGER PRIMARY KEY "
+        "AUTOINCREMENT, attempt_id INTEGER NOT NULL UNIQUE, revision_id "
+        "INTEGER, task_id TEXT, delivery_status TEXT, delivery_digest "
+        "TEXT, session_ref TEXT, actual_model TEXT, receipt_json TEXT, "
+        "created_at TEXT NOT NULL)")
+    conn.execute(
+        "INSERT INTO completion_receipts(id, attempt_id, revision_id, "
+        "task_id, delivery_status, delivery_digest, session_ref, "
+        "actual_model, receipt_json, created_at) VALUES (7, 201, 10, "
+        "'T001', 'passed', "
+        "'d94c5e548240ab9f3d6ad5584a48ff9581be22f79417f6ce08a15ecc6b1a0d2e', "
+        "'sess_subagent_worker', 'glm-5.3', "
+        "'{\"status\":\"passed\",\"idempotent\":true}', "
+        "'2026-10-16T18:00:00+00:00')")
+    conn.commit()
+    conn.close()
+    r = import_orx_project(world["store"], str(v15))
+    assert "error" not in r, r
+    assert r["counts"]["orx_receipts"] == 1
+    assert r["counts"]["orx_replan_sources"] == 1
+    row = world["store"].conn.execute(
+        "SELECT attempt_id, task_id, delivery_status, delivery_digest, "
+        "session_ref, actual_model, created_at FROM orx_receipts "
+        "WHERE snapshot_id=?", (r["snapshot_id"],)).fetchone()
+    assert row["attempt_id"] == 201
+    assert row["task_id"] == "T001"
+    assert row["delivery_status"] == "passed"
+    assert row["delivery_digest"].startswith("d94c5e54")
+    assert row["created_at"] == "2026-10-16T18:00:00+00:00"
+    # the replay payload is deliberately absent from the mirror surface
+    cols = {c["name"] for c in world["store"].conn.execute(
+        "PRAGMA table_info(orx_receipts)")}
+    assert "receipt_json" not in cols
+    nonce = world["store"].conn.execute(
+        "SELECT nonce FROM orx_attempts WHERE snapshot_id=? AND id=201",
+        (r["snapshot_id"],)).fetchone()
+    assert nonce["nonce"] == "orx-assignment:9c1d0a34-1e2f-4a3b-8c5d-000000000201"
+    goal = world["store"].conn.execute(
+        "SELECT status FROM orx_goals WHERE snapshot_id=?",
+        (r["snapshot_id"],)).fetchone()
+    assert goal["status"] == "cancelling"              # second new state, verbatim
+
+
+def test_store_v2_upgrades_to_v3_adding_receipts(tmp_path):
+    """An existing analytics.db (store v2, before orx_receipts existed)
+    opens, upgrades in place, keeps its rows; a foreign future version
+    still refuses."""
+    import pytest
+    from orxanalytics.store import Store
+    old = Store(tmp_path / "home1")
+    old.conn.execute(
+        "INSERT INTO orx_snapshots(project_key, taken_at, schema_version, "
+        "source_path) VALUES ('p','2026-10-12T00:00:00+00:00','12','x')")
+    old.conn.commit()
+    old.close()
+    # degrade it to a v2 store: drop the receipts mirror, reset the version
+    conn = sqlite3.connect(tmp_path / "home1" / "analytics.db")
+    conn.execute("DROP TABLE orx_receipts")
+    conn.execute("UPDATE meta SET value='2' WHERE key='store_version'")
+    conn.commit()
+    conn.close()
+
+    store = Store(tmp_path / "home1")
+    try:
+        cols = {r["name"] for r in store.conn.execute(
+            "PRAGMA table_info(orx_receipts)")}
+        assert {"attempt_id", "delivery_status", "delivery_digest"} <= cols
+        version = store.conn.execute(
+            "SELECT value FROM meta WHERE key='store_version'").fetchone()[0]
+        assert version == "3"
+        kept = store.conn.execute(
+            "SELECT COUNT(*) FROM orx_snapshots").fetchone()[0]
+        assert kept == 1
+    finally:
+        store.close()
+    # a version this code cannot upgrade refuses
+    conn = sqlite3.connect(tmp_path / "home1" / "analytics.db")
+    conn.execute("UPDATE meta SET value='9' WHERE key='store_version'")
+    conn.commit()
+    conn.close()
+    with pytest.raises(RuntimeError, match="store_version 9"):
+        Store(tmp_path / "home1")
+
+
+def test_store_v1_upgrades_through_v2_to_v3(tmp_path):
+    """An existing analytics.db (store v1, orx_attempts without nonce, before
+    orx_receipts existed) opens, upgrades in place through every additive
+    step, and keeps its rows; a foreign future version still refuses."""
     import pytest
     from orxanalytics.store import Store
     old = Store(tmp_path / "home1")
@@ -215,9 +351,11 @@ def test_store_v1_upgrades_to_v2_adding_nonce_column(tmp_path):
         "source_path) VALUES ('p','2026-10-06T00:00:00+00:00','11','x')")
     old.conn.commit()
     old.close()
-    # degrade it to a v1 store: drop the nonce column, reset the version
+    # degrade it to a v1 store: drop the nonce column and the receipts
+    # mirror, reset the version
     conn = sqlite3.connect(tmp_path / "home1" / "analytics.db")
     conn.execute("ALTER TABLE orx_attempts DROP COLUMN nonce")
+    conn.execute("DROP TABLE orx_receipts")
     conn.execute("UPDATE meta SET value='1' WHERE key='store_version'")
     conn.commit()
     conn.close()
@@ -227,9 +365,12 @@ def test_store_v1_upgrades_to_v2_adding_nonce_column(tmp_path):
         cols = {r["name"] for r in store.conn.execute(
             "PRAGMA table_info(orx_attempts)")}
         assert "nonce" in cols
+        receipts = {r["name"] for r in store.conn.execute(
+            "PRAGMA table_info(orx_receipts)")}
+        assert "delivery_digest" in receipts
         version = store.conn.execute(
             "SELECT value FROM meta WHERE key='store_version'").fetchone()[0]
-        assert version == "2"
+        assert version == "3"
         kept = store.conn.execute(
             "SELECT COUNT(*) FROM orx_snapshots").fetchone()[0]
         assert kept == 1

@@ -83,7 +83,7 @@ def test_probe_orx_gate(tmp_path):
     assert not r.ok  # gate refuses 7 exactly like the contract
 
 
-def test_probe_orx_gate_accepts_v10_v11_v12(tmp_path):
+def test_probe_orx_gate_accepts_v10_through_v15(tmp_path):
     root = tmp_path / "proj"
     (root / ".orx").mkdir(parents=True)
     conn = sqlite3.connect(root / ".orx" / "state.db")
@@ -110,12 +110,23 @@ def test_probe_orx_gate_accepts_v10_v11_v12(tmp_path):
     # usage_observations.source CHECK admits 'zcode_db'; no new columns
     r = probe.probe_orx(root)
     assert r.ok and r.fields["schema_version"] == "12"
+    # v13/v14/v15 (G010 lifecycle amendments, 2026-10-16): additive only —
+    # goals.status CHECK widens (paused/cancelling), v15 adds the
+    # completion_receipts table; no pre-existing table changes shape
+    for sv in ("13", "14", "15"):
+        conn = sqlite3.connect(root / ".orx" / "state.db")
+        conn.execute(
+            "UPDATE meta SET value=? WHERE key='schema_version'", (sv,))
+        conn.commit()
+        conn.close()
+        r = probe.probe_orx(root)
+        assert r.ok and r.fields["schema_version"] == sv, sv
     conn = sqlite3.connect(root / ".orx" / "state.db")
-    conn.execute("UPDATE meta SET value='13' WHERE key='schema_version'")
+    conn.execute("UPDATE meta SET value='16' WHERE key='schema_version'")
     conn.commit()
     conn.close()
     # versions beyond the contract are still refused: widen only when the
     # ORX contract amendment lands
     r = probe.probe_orx(root)
     assert not r.ok
-    assert any("13" in g for g in r.gaps)
+    assert any("16" in g for g in r.gaps)

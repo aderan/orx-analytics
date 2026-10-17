@@ -127,8 +127,15 @@ ORX_DATA_DIR > XDG_DATA_HOME/orx > ~/.local/share/orx
   来源不受影响；索引损坏或 `index_version` 不认识时只隔离索引来源。
 - 项目删除、目录不可读或 `.orx/state.db` 无法打开时保留历史快照，
   数据健康显示“来源不可读”；schema 版本不在白名单
-  （`probe.SUPPORTED_ORX_SCHEMA`，当前 {8..12}）时显示“版本不支持”，
+  （`probe.SUPPORTED_ORX_SCHEMA`，当前 {8..15}）时显示“版本不支持”，
   均不崩溃、不清历史。
+- ORX v13/v14/v15（G010 生命周期管理，2026-10-16）为纯增量修订：
+  `goals.status` 新增 `paused`/`cancelling`（展示为“已暂停”/“取消中”，
+  均非终态），v15 新增 `completion_receipts` 回执表。镜像仅取回执事实
+  （digest/身份/时间），不镜像 `receipt_json` 重放负载——回执是给补交
+  方的重放面，分析层只读不重放。Goal 状态始终读 `goals.status` 原文，
+  不从 run 聚合推导；paused/cancelling 属未完成态（占用唯一 Goal 槽位），
+  本工具不据此获得任何调度或迁移权限。
 - `discover` 本身只读；`--register` 才把未登记的发现结果显式写入
   registry（等价于逐个 `projects add`）。
 

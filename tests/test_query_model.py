@@ -252,17 +252,18 @@ def qw(tmp_path):
         "UPDATE orx_snapshots SET taken_at=? WHERE snapshot_id=?",
         (taken_b, snap_b))
 
-    # unsupported-schema project: live v13 source refuses to import, and a
-    # foreign snapshot (from a newer reader) must stay isolated, no crash
+    # unsupported-schema project: live v16 source (beyond the contract
+    # gate) refuses to import, and a foreign snapshot (from a newer reader)
+    # must stay isolated, no crash
     proj_c = tmp_path / "ProjC"
     (proj_c / ".orx").mkdir(parents=True)
-    _min_orx_db(proj_c / ".orx" / "state.db", "13")
+    _min_orx_db(proj_c / ".orx" / "state.db", "16")
     registry.add_project(store, str(proj_c))
     assert "error" in import_orx_project(store, str(proj_c))
     cur = store.conn.execute(
         "INSERT INTO orx_snapshots(project_key,taken_at,schema_version,"
         "source_path) VALUES (?,?,?,?)",
-        (str(proj_c), taken_a, "13", str(proj_c / ".orx" / "state.db")))
+        (str(proj_c), taken_a, "16", str(proj_c / ".orx" / "state.db")))
     snap_c = cur.lastrowid
     store.conn.execute(
         "INSERT INTO orx_runs VALUES (?,?,?,?,?,?,?,?)",

@@ -18,7 +18,7 @@ TASK_VALUES = [
     "pending", "runnable", "running", "waiting_host", "waiting_external",
     "verifying", "passed", "failed", "blocked", "cancelled",
 ]
-GOAL_VALUES = ["active", "done", "cancelled"]
+GOAL_VALUES = ["active", "paused", "cancelling", "done", "cancelled"]
 TERMINAL_DISPLAY = {"完成", "失败", "已取消"}
 
 
@@ -43,6 +43,15 @@ class TestStatusMapping:
         m = display.goal_status(raw)
         assert m["raw"] == raw
         assert m["known"] is True
+
+    def test_goal_lifecycle_states_not_terminal(self):
+        # G010 v13/v14: paused/cancelling are UNFINISHED goal states (they
+        # occupy the one unfinished-Goal slot); only cancelled is terminal
+        for raw in ("paused", "cancelling"):
+            m = display.goal_status(raw)
+            assert m["known"] is True
+            assert not display.is_terminal(m)
+        assert display.is_terminal(display.goal_status("cancelled"))
 
     def test_run_design_labels_present(self):
         # the design's §4 vocabulary must exist for known facts

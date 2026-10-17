@@ -18,19 +18,35 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-STORE_VERSION = "2"
+STORE_VERSION = "3"
+
+_RECEIPTS_TABLE = """
+CREATE TABLE IF NOT EXISTS orx_receipts(
+  snapshot_id INTEGER NOT NULL, id INTEGER NOT NULL, attempt_id INTEGER NOT NULL,
+  revision_id INTEGER, task_id TEXT, delivery_status TEXT,
+  delivery_digest TEXT, session_ref TEXT, actual_model TEXT,
+  created_at TEXT,
+  PRIMARY KEY(snapshot_id, id)
+);
+"""
 
 
 def _migrate_store(conn: sqlite3.Connection, from_version: str) -> None:
     """In-place additive upgrades of the analytics store itself. v1 -> v2:
-    orx_attempts gains the ORX v11 `nonce` column (identity anchors)."""
-    if from_version == "1":
+    orx_attempts gains the ORX v11 `nonce` column (identity anchors).
+    v2 -> v3: adds the `orx_receipts` mirror table (ORX v15 completion
+    receipts). SCHEMA already creates it idempotently on open; the branch
+    keeps the explicit step so a migrated store is provably complete."""
+    v = int(from_version)
+    if v < 2:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(orx_attempts)")}
         if cols and "nonce" not in cols:
             conn.execute("ALTER TABLE orx_attempts ADD COLUMN nonce TEXT")
-        conn.execute(
-            "UPDATE meta SET value=? WHERE key='store_version'", (STORE_VERSION,))
-        conn.commit()
+    if v < 3:
+        conn.executescript(_RECEIPTS_TABLE)
+    conn.execute(
+        "UPDATE meta SET value=? WHERE key='store_version'", (STORE_VERSION,))
+    conn.commit()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -203,6 +219,17 @@ CREATE TABLE IF NOT EXISTS orx_attempt_progress(
   sequence INTEGER, phase TEXT, message TEXT, received_at TEXT,
   PRIMARY KEY(snapshot_id, id)
 );
+-- ORX v15 completion receipts (G010 T005): replay surfaces keyed by the
+-- UNIQUE attempt_id — one receipt per accepted delivery, never a re-run
+-- instruction. receipt_json (the verbatim replay payload) is deliberately
+-- NOT mirrored: analytics displays receipt facts, it never replays them.
+CREATE TABLE IF NOT EXISTS orx_receipts(
+  snapshot_id INTEGER NOT NULL, id INTEGER NOT NULL, attempt_id INTEGER NOT NULL,
+  revision_id INTEGER, task_id TEXT, delivery_status TEXT,
+  delivery_digest TEXT, session_ref TEXT, actual_model TEXT,
+  created_at TEXT,
+  PRIMARY KEY(snapshot_id, id)
+);
 -- correlation ----------------------------------------------------------
 CREATE TABLE IF NOT EXISTS links(
   project_key TEXT NOT NULL, attempt_id INTEGER NOT NULL,
@@ -240,7 +267,7 @@ def now_iso() -> str:
 
 
 # store versions this code can upgrade in place; anything else refuses
-_MIGRATABLE_FROM = {"1"}
+_MIGRATABLE_FROM = {"1", "2"}
 
 
 class Store:
