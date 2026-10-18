@@ -7,7 +7,8 @@ socket with a versioned JSON protocol; App and CLI each hold their own
 collection demand on their own connection, so one side exiting never stops
 the other's collection. Refresh requests coalesce into a bounded pending
 job; state refresh, usage import and anomaly analysis are scheduled on
-separate cadences (5/15/60s tiers); change detection lowers overhead with
+separate cadences (30/60/300s tiers, lowered from 5/15/60s by the G012
+user-feedback cadence fix); change detection lowers overhead with
 periodic full re-checks; one project's failure never touches another's and
 never drops its last successful data; sleep never produces stall verdicts
 and wake forces a re-sync; crashes restart a bounded number of times with
@@ -347,42 +348,131 @@ def test_refresh_job_runs_once_not_stacked(home, proj):
 # ================================================================ scheduling ===
 
 def test_scheduler_tiers_and_lane_cadences(home, proj):
-    """调度分级 5/15/60s; 状态/用量/异常分别调度; 历史核对低频或手动."""
+    """调度分级 30/60/300s (G012 降低默认频率); 状态/用量/异常分别调度;
+    历史核对低频或手动."""
     register(home, proj)
     clock = FakeClock()
     e = eng.Engine(home, clock=clock)
     e.acquire()
     try:
-        assert e.tier() == ("idle", 60.0)
+        # the NEW default tiers, verbatim (G012 用户反馈 4: 刷新过于频繁)
+        assert eng.TIER_INTERVALS == {"ui": 30.0, "active": 60.0,
+                                      "idle": 300.0}
+        assert e.tier() == ("idle", 300.0)
         e.hold_demand("cli", "background")
-        assert e.tier() == ("active", 15.0)
+        assert e.tier() == ("active", 60.0)
         e.hold_demand("app", "ui")
-        assert e.tier() == ("ui", 5.0)
+        assert e.tier() == ("ui", 30.0)
 
         report = e.tick()
         lanes = report["lanes"]
         assert set(lanes) >= {"state", "usage", "anomalies"}
         assert lanes["state"]["runs"] == 1
-        # separate cadences: at ui tier, the next state round is due in 5s
+        # separate cadences: at ui tier, the next state round is due in 30s
         # while usage waits 4x and anomalies 2x that
-        clock.advance(5)
+        clock.advance(30)
         report = e.tick()
         assert report["lanes"]["state"]["runs"] == 2
         assert report["lanes"]["usage"]["runs"] == 1
         assert report["lanes"]["anomalies"]["runs"] == 1
-        clock.advance(5)
+        clock.advance(30)
         report = e.tick()
         assert report["lanes"]["state"]["runs"] == 3
         assert report["lanes"]["anomalies"]["runs"] == 2
         assert report["lanes"]["usage"]["runs"] == 1
+        clock.advance(60)               # t=120: usage due (4x ui tier)
+        report = e.tick()
+        assert report["lanes"]["state"]["runs"] == 4   # t=0/30/60/120
+        assert report["lanes"]["usage"]["runs"] == 2
         # history audit is low-frequency: not due for a long time
         assert report["lanes"]["history_audit"]["runs"] == 0
         assert e.lane_next_due("history_audit") - clock() > 900
         # manual trigger runs it immediately
         e.request_history_audit()
-        clock.advance(5)
+        clock.advance(30)
         report = e.tick()
         assert report["lanes"]["history_audit"]["runs"] == 1
+    finally:
+        e.release()
+
+
+def test_lower_default_cadence_controlled_clock_comparison(home, proj):
+    """G012 用户反馈 4：受控时钟对比同一时间窗口内旧、新默认节律.
+
+    The OLD defaults (ui 5s / active 15s / idle 60s with 30s/90s leases)
+    are simulated with the engine's injectable intervals; the NEW defaults
+    are the module constants. Over the SAME 300s window at the ui tier the
+    new cadence must run every lane strictly fewer times. The clock is
+    fake — no test sleeps for the window.
+    """
+    old_tiers = {"ui": 5.0, "active": 15.0, "idle": 60.0}
+
+    def lane_runs(window: float, step: float, intervals: dict | None,
+                  leases: dict | None) -> dict[str, int]:
+        register(home, proj)
+        clock = FakeClock()
+        kwargs: dict = {"clock": clock}
+        if intervals is not None:
+            kwargs["intervals"] = intervals
+        e = eng.Engine(home, **kwargs)
+        if leases is not None:
+            e.demand = eng.DemandTracker(leases)
+        e.acquire()
+        try:
+            runs = {"state": 0, "usage": 0, "anomalies": 0}
+            t = 0.0
+            while t <= window:
+                e.hold_demand("app", "ui")   # a client that renews on time
+                report = e.tick()
+                for name in runs:
+                    if report["lanes"][name].get("ran"):
+                        runs[name] += 1
+                clock.advance(step)
+                t += step
+            return runs
+        finally:
+            e.release()
+
+    old = lane_runs(300, 1.0, old_tiers, {"ui": 30.0, "background": 90.0})
+    new = lane_runs(300, 1.0, None, None)
+    # same window, strictly fewer automatic rounds on every lane
+    for name in ("state", "usage", "anomalies"):
+        assert new[name] < old[name], (name, old[name], new[name])
+    # and the exact new expectations at the ui tier (30/120/60s lanes)
+    assert old["state"] == 61 and new["state"] == 11     # 5s -> 30s
+    assert old["usage"] == 16 and new["usage"] == 3      # 20s -> 120s
+    assert old["anomalies"] == 31 and new["anomalies"] == 6   # 10s -> 60s
+
+
+def test_demand_leases_aligned_with_lower_cadence(home, proj):
+    """G012：需求租约与新节律一致.
+
+    A UI client renews its lease once per refresh round (default 30s
+    now). The lease must comfortably outlive the interval — a single
+    missed round must not drop the tier — while still expiring when the
+    client really goes away without renewal."""
+    register(home, proj)
+    clock = FakeClock()
+    e = eng.Engine(home, clock=clock)
+    e.acquire()
+    try:
+        # alignment invariants: lease covers at least two full intervals
+        assert eng.DEMAND_LEASE_SECONDS["ui"] >= 2 * eng.TIER_INTERVALS["ui"]
+        assert (eng.DEMAND_LEASE_SECONDS["background"]
+                >= 2 * eng.TIER_INTERVALS["active"])
+        # behavior: one hold survives past the whole ui interval
+        e.hold_demand("app", "ui")
+        clock.advance(eng.TIER_INTERVALS["ui"] + 1)
+        assert e.tier()[0] == "ui", "one missed renewal must not drop the tier"
+        # ...but a client that never renews eventually releases the tier
+        clock.advance(eng.DEMAND_LEASE_SECONDS["ui"])
+        assert e.tier()[0] == "idle", "unrenewed demand must expire"
+        # same for the CLI holder's background demand
+        e.hold_demand("cli", "background")
+        clock.advance(eng.TIER_INTERVALS["active"] + 1)
+        assert e.tier()[0] == "active"
+        clock.advance(eng.DEMAND_LEASE_SECONDS["background"])
+        assert e.tier()[0] == "idle"
     finally:
         e.release()
 
@@ -396,8 +486,8 @@ def test_change_detection_and_periodic_full_recheck(home, proj):
     try:
         e.tick()
         assert snapshot_count(home, str(proj)) == 1
-        # unchanged files: skipped round, no new snapshot
-        clock.advance(60)
+        # unchanged files: skipped round, no new snapshot (idle tier 300s)
+        clock.advance(300)
         report = e.tick()
         action = report["lanes"]["state"]["projects"][str(proj)]["action"]
         assert action == "unchanged"
@@ -416,7 +506,7 @@ def test_change_detection_and_periodic_full_recheck(home, proj):
         assert e._source_signature(str(proj)) != sig1
         (proj / ".orx" / "state.db-wal").unlink()
         os.utime(proj / ".orx" / "state.db", None)
-        clock.advance(60)
+        clock.advance(300)
         report = e.tick()
         action = report["lanes"]["state"]["projects"][str(proj)]["action"]
         assert action == "imported"
@@ -491,7 +581,7 @@ def test_active_runs_raise_the_tier_without_any_client(home, proj):
         conn.commit()
         conn.close()
         os.utime(db, None)                 # signature change -> re-import
-        clock.advance(60)
+        clock.advance(300)                 # idle tier is 300s now
         e.tick()
         assert e.tier()[0] == "active"
     finally:
@@ -525,13 +615,14 @@ def test_cancelled_goal_does_not_hold_the_active_tier(home, proj):
 
         e.tick()
         assert e.tier()[0] == "idle"        # base fixture: R001 done
-        # run running under an active goal -> active cadence
+        # run running under an active goal -> active cadence (the first
+        # re-check happens at the idle interval, 300s now)
         set_state("active", "running")
-        clock.advance(60)
+        clock.advance(300)
         e.tick()
         assert e.tier()[0] == "active"
         # paused control state: the run keeps executing (in-flight work is
-        # not starved) -> still the active cadence
+        # not starved) -> still the active cadence (60s tier)
         set_state("paused", None)
         clock.advance(60)
         e.tick()

@@ -97,6 +97,31 @@ final class RunDetailModelTests: XCTestCase {
         XCTAssertNotNil(model.taskFailureText)
     }
 
+    // MARK: G012 — detail cadence follows the shared preference (no 5s hardcode)
+
+    /// 详情不再保留独立的 5 秒硬编码：auto-refresh requires a caller-provided
+    /// cadence (the app's shared refresh preference, default 30s), and
+    /// starting the loop must not append an immediate extra round right
+    /// after the open-path load.
+    func testAutoRefreshFollowsProvidedCadenceWithoutImmediateDuplicate() async {
+        client.runDetail = Self.fixtureRunDetail()
+        let model = RunDetailModel(client: client,
+                                   identity: RunIdentity(project: "/tmp/projA",
+                                                         runID: "R001"))
+        await model.load()                              // the open-path load
+        XCTAssertEqual(client.runFetchCount, 1)
+
+        model.startAutoRefresh(interval: 0.3)           // caller-provided cadence
+        try? await Task.sleep(nanoseconds: 150_000_000) // < interval: quiet
+        XCTAssertEqual(client.runFetchCount, 1,
+                      "启动自动刷新不得立即追加一轮（打开路径已加载）")
+
+        try? await Task.sleep(nanoseconds: 550_000_000) // past one interval
+        XCTAssertGreaterThanOrEqual(client.runFetchCount, 2,
+                                    "按调用方提供的节奏继续刷新")
+        model.stopAutoRefresh()
+    }
+
     // MARK: honest derivations
 
     func testRetryWordingDistinguishesRetryingRecoveredAndPlainFailure() {
@@ -192,6 +217,30 @@ final class RunDetailModelTests: XCTestCase {
         let dims3 = RunDimensions.build(run: run, tasks: [], health: nil,
                                         snapshots: [:], project: "/tmp/projA")
         XCTAssertEqual(dims3.dataHealth, "未知")
+    }
+
+    /// G012：计数展示走统一格式器——当前计划失败任务数过千时按
+    /// 固定三位分组，数字语义不变（仍是当前计划事实）。
+    func testAttentionSummaryGroupsFailedTaskCountsOverAThousand() {
+        let run = RunFacts(project: "/tmp/projA", runID: "R001", goal: nil,
+                           status: DisplayStatus(raw: "running", known: true,
+                                                 display: "执行中"),
+                           startedAt: nil, completedAt: nil, updatedAt: nil,
+                           createdAt: nil, timeBasis: nil,
+                           progress: ProgressBlock(completed: 2, total: 5,
+                                                   revisionID: 102, revision: 2),
+                           consumption: nil, dataAsOf: nil, schemaVersion: nil)
+        let tasks = (0..<1_234).map { i in
+            TaskListItem(revisionID: 102, revision: 2, taskID: "F\(i)",
+                         objective: "失败任务",
+                         status: DisplayStatus(raw: "failed", known: true,
+                                               display: "失败"),
+                         failureReason: "timeout", attemptCount: 1,
+                         consumption: nil)
+        }
+        let dims = RunDimensions.build(run: run, tasks: tasks, health: nil,
+                                       snapshots: [:], project: "/tmp/projA")
+        XCTAssertEqual(dims.attentionSummary, "当前计划失败任务 1,234")
     }
 
     /// G011 分层：详情页的执行概况同时暴露 Goal 控制层与 Run 执行事实

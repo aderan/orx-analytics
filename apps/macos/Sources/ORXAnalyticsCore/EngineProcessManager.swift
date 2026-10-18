@@ -363,9 +363,27 @@ public final class EngineProcessManager: EngineProcessManaging {
 
     /// Build the real child process for a data dir, with the engine's
     /// launch log (size-capped, §8 本地日志有容量限制).
+    ///
+    /// `environment` is injectable so the real-child seal regression can
+    /// supply a hostile parent environment (e.g. PYTHONDONTWRITEBYTECODE=0);
+    /// production always uses the app's own `ProcessInfo` environment.
     static func makeChild(location: EngineRuntimeLocation, dataDir: String,
-                          fileManager: FileManager) throws -> EngineChildProcess {
-        var environment = ProcessInfo.processInfo.environment
+                          fileManager: FileManager,
+                          environment parentEnvironment: [String: String] =
+                              ProcessInfo.processInfo.environment) throws -> EngineChildProcess {
+        var environment = parentEnvironment
+        // Runtime seal fix (disclosed v0.4.2 defect, G012 T006): force
+        // the engine child to never write bytecode, overriding whatever
+        // the parent environment carries. An operator-launched app has
+        // no such flag (and CPython also writes bytecode for the values
+        // "0" and ""), so the first engine start used to drop 73
+        // __pycache__/*.pyc entries INTO the signed .app and flip
+        // `codesign --verify --strict` from 0 to 1 — only harness-
+        // launched engines (whose env already carried the flag) stayed
+        // sealed. The flag must be forced here in the app itself: the
+        // bundled runtime's stdlib and analytics code live inside the
+        // sealed bundle, and any pyc written there is a seal break.
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         if let searchPath = location.moduleSearchPath {
             let existing = environment["PYTHONPATH"]
             environment["PYTHONPATH"] = (existing?.isEmpty ?? true)
@@ -382,6 +400,16 @@ public final class EngineProcessManager: EngineProcessManaging {
         if let size = (try? fileManager.attributesOfItem(atPath: logURL.path)[.size]) as? Int,
            size > Self.engineLogByteCap {
             try? fileManager.removeItem(at: logURL)
+        }
+        // FileHandle(forWritingAtPath:) never CREATES the file: on a
+        // fresh install (or right after the cap rotation removed it)
+        // the documented launch log did not exist, the open returned
+        // nil, and the engine's stderr silently went to nullDevice —
+        // the log never appeared. Create it empty so the handle (and
+        // thus the real-launch evidence the post-install seal check
+        // requires, G012 T006) always attaches.
+        if !fileManager.fileExists(atPath: logURL.path) {
+            _ = fileManager.createFile(atPath: logURL.path, contents: nil)
         }
         let opened = FileHandle(forWritingAtPath: logURL.path)
         if let opened {

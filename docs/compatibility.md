@@ -1,13 +1,13 @@
 # 版本兼容与来源能力
 
 软件版本、ORX 数据 schema、analytics 存储 schema 独立演进。
-orx-analytics 0.4.2 支持以下明确的数据版本，不按“大于等于”推测兼容。
-**经验证的兼容组合：ORX v0.4.0 + orx-analytics v0.4.2**（ORX 软件
-版本 0.4.0、ORX schema v15、analytics 0.4.2、store v3——四条版本轴
+orx-analytics 0.4.3 支持以下明确的数据版本，不按“大于等于”推测兼容。
+**经验证的兼容组合：ORX v0.4.0 + orx-analytics v0.4.3**（ORX 软件
+版本 0.4.0、ORX schema v15、analytics 0.4.3、store v4——四条版本轴
 各自独立，两个仓库的软件版本不必同号）。
 
 | ORX schema | 本工具读取能力 |
-|---|---|
+|------|------|
 | 8 | 核心执行事实、用量、验证、会话引用 |
 | 9 | 另含重规划对应关系 |
 | 10 | 另含显式 attempt progress |
@@ -18,8 +18,15 @@ orx-analytics 0.4.2 支持以下明确的数据版本，不按“大于等于”
 | 15 | 保留 v14 形状；新增 `completion_receipts` 回执表 |
 | 其他、缺失或非法值 | 拒绝，不迁移、不补列、不改版本号 |
 
-analytics 自己的 store 版本为 3，可以将 v1/v2 数据原地进行增量迁移；
-无法读取未知未来版本。ORX 的读取语义由
+analytics 自己的 store 版本为 4，可以将 v1/v2/v3 数据原地进行增量迁移；
+无法读取未知未来版本。v3 → v4 为**纯增列**：`zc_requests` 镜像新增
+zcode `model_usage` 的逐请求 token 列，并把 zcode 采集游标
+（`model_usage_rowid`）重置，使下一次采集重读已镜像行并按天然主键
+`(session_id, logical_request_id, attempt_index)` 幂等补齐新字段——重复
+采集不重复计数（导入计数中新行为零）。zcode 来源缺这些列时（旧库）
+镜像为 NULL、缺口在导入计数的 `model_usage_columns_missing` 与 `probe`
+中列名，controller 请求口径相应字段保持未知，绝不补零。ORX 的读取语义
+由
 [ORX observability contract](https://github.com/aderan/orx/blob/main/docs/observability-contract.md)
 定义。本仓的指标与关联分别以 [metrics.md](metrics.md) 和
 [correlation.md](correlation.md) 为准。
@@ -38,9 +45,9 @@ analytics 自己的 store 版本为 3，可以将 v1/v2 数据原地进行增量
 ## 来源和平台
 
 | 来源 | 默认位置 | 当前能力与限制 |
-|---|---|---|
+|------|------|------|
 | ORX | 已登记项目的 `.orx/state.db` | 按显式版本和列名读取；每轮追加快照；可用 `collect --skip-global` 单独采集 |
-| ZCode | `~/.zcode/cli/db/db.sqlite` | 会话树、turn 用量、请求/重试、工具调用；`session` 和 `bundle session` 使用此来源 |
+| ZCode | `~/.zcode/cli/db/db.sqlite` | 会话树、turn 用量、请求/重试、逐请求 token（store v4 起，含 controller 请求口径）、工具调用；`session` 和 `bundle session` 使用此来源；缺 token 列的旧库按缺口列名 |
 | Codex | `~/.codex/sessions/**/rollout-*.jsonl` | 线程、模型上下文、用量及事件；按字节游标增量读取，不补全缺失日志 |
 | Cursor | macOS `~/Library/Application Support/Cursor/user/globalStorage/state.vscdb` | composer 与 workspace 映射；来源没有逐消息用量时保持缺口 |
 
@@ -62,7 +69,7 @@ macOS，Windows 来源和 watcher 尚未纳入验收。
 
 扩大版本支持前应检查 ORX 契约修正，更新 probe/importer 与对应样本测试。
 若规范观测来源或指标定义变化，同时检查报告、异常规则和证据包复算，
-避免同一份数据出现不同结论。0.4.2 的规范来源优先级为
+避免同一份数据出现不同结论。0.4.3 的规范来源优先级为
 `native_cli > zcode_db > host_report > output_estimate`，同级取最小观测 id。
 
 CI 验证确定性样本、源码包和独立 wheel 安装；不需要真实来源、不调用模型。

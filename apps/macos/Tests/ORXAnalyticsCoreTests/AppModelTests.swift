@@ -35,6 +35,7 @@ final class FakeEngineClient: EngineClientProtocol {    var latency: TimeInterva
     private let lock = NSLock()
     private(set) var negotiateCount = 0
     private(set) var fetchCount = 0
+    private(set) var runDetailFetchCount = 0
     private(set) var refreshReasons: [String] = []
 
     private func nap() {
@@ -64,6 +65,7 @@ final class FakeEngineClient: EngineClientProtocol {    var latency: TimeInterva
     // Detail ops (T009): the fake serves simulator-shaped payloads so
     // AppModel-driven windows can drill in without a live engine.
     func fetchRunDetail(project: String, runID: String) throws -> RunDetailEnvelope {
+        lock.lock(); runDetailFetchCount += 1; lock.unlock()
         nap()
         let data = EngineSimulator.encode(
             EngineSimulator.runDetailResponse(project: project, runID: runID))
@@ -150,6 +152,39 @@ final class AppModelTests: XCTestCase {
 
     // MARK: cache-first
 
+    /// Detail-window selection routing (G012: 点击项目前置详情窗口):
+    /// the card click sets project+run BEFORE the window opens (首次
+    /// 打开即指向所点项目), consecutive clicks on DIFFERENT projects keep
+    /// only the LAST selection (the single detail window never shows two
+    /// runs), and 查看全部执行 resets to the entry list. The selection is
+    /// pure UI routing — the model stays a read-only analytics layer.
+    func testDetailSelectionRoutesCardClicksAndKeepsLastSelection() {
+        let model = AppModel(client: FakeEngineClient(),
+                             cache: OverviewCacheStore(directory: directory))
+
+        // entry state: no run picked (the window hosts the history query)
+        XCTAssertNil(model.selectedRun)
+
+        // 首次打开：点击即选中该项目的该 run（上下文完整保留）
+        model.openRunDetail(project: "/tmp/projA", runID: "R001")
+        XCTAssertEqual(model.selectedRun,
+                       RunIdentity(project: "/tmp/projA", runID: "R001"))
+
+        // 连续点击不同项目：单一详情窗口跟随最后一次点击
+        model.openRunDetail(project: "/tmp/projB", runID: "R002")
+        XCTAssertEqual(model.selectedRun,
+                       RunIdentity(project: "/tmp/projB", runID: "R002"))
+
+        // 再点回第一个项目：选中项跟随点击，不残留
+        model.openRunDetail(project: "/tmp/projA", runID: "R001")
+        XCTAssertEqual(model.selectedRun,
+                       RunIdentity(project: "/tmp/projA", runID: "R001"))
+
+        // 查看全部执行：回到入口列表
+        model.openAllRuns()
+        XCTAssertNil(model.selectedRun)
+    }
+
     func testBootstrapPublishesCacheSynchronouslyBeforeRefreshCompletes() {
         let cache = seedCache(active: 5, attention: 0)
         let fake = FakeEngineClient()
@@ -219,6 +254,101 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.activeRunCount, 1)
     }
 
+    // MARK: G012 — lowered cadence, no duplicate immediate rounds
+
+    /// 打开面板不再重复立即刷新：bootstrap runs the one immediate round;
+    /// starting the auto loop must NOT fire a second immediate round —
+    /// it waits a full interval first.
+    func testPanelOpenDoesNotFireDuplicateImmediateRefreshRounds() async {
+        let fake = FakeEngineClient()
+        fake.overviewEnvelope = FakeEngineClient.fixture(activeRuns: 1, attention: 0)
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory))
+        model.bootstrap()                        // immediate round #1 (background)
+        await model.refresh(reason: "panel-open")   // coalesces with/follows #1
+        XCTAssertEqual(fake.negotiateCount, 1)
+        // the auto loop (as wired by QuickPanelView's onAppear right after
+        // bootstrap) must sleep a full interval before its first round
+        model.startAutoRefresh(interval: 60)
+        try? await Task.sleep(nanoseconds: 300_000_000)   // 0.3s << 60s
+        model.stopAutoRefresh()
+        XCTAssertEqual(fake.negotiateCount, 1,
+                       "打开面板时的立即刷新只发生一次（bootstrap），自动循环先等一个间隔")
+    }
+
+    /// 重复打开面板：data refreshed within the interval is fresh enough —
+    /// bootstrap skips its immediate round; the loop refreshes on cadence.
+    func testBootstrapSkipsImmediateRoundWhenDataIsFresh() async {
+        let fake = FakeEngineClient()
+        fake.overviewEnvelope = FakeEngineClient.fixture(activeRuns: 2, attention: 0)
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory))
+        await model.refresh(reason: "manual")
+        XCTAssertEqual(fake.negotiateCount, 1)
+        model.bootstrap()
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(fake.negotiateCount, 1,
+                       "刚刷新过就再次打开面板：不再追加立即刷新")
+    }
+
+    /// 手动刷新立即生效 — never gated by freshness.
+    func testManualRefreshIsImmediateEvenWhenDataIsFresh() async {
+        let fake = FakeEngineClient()
+        fake.overviewEnvelope = FakeEngineClient.fixture(activeRuns: 1, attention: 0)
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory))
+        await model.refresh(reason: "manual")
+        let rounds = fake.negotiateCount
+        await model.refreshNow()
+        XCTAssertEqual(fake.negotiateCount, rounds + 1,
+                       "手动刷新立即生效，不受新鲜度门槛影响")
+    }
+
+    /// 受控对比：同一观察窗口内，快节律（旧默认的替身）的自动刷新轮数
+    /// 必须多于慢节律（新默认的替身）——测试不依赖长时间真实 sleep。
+    func testAutoRefreshRoundCountScalesWithIntervalInSameWindow() async {
+        let oldFake = FakeEngineClient()
+        let oldModel = AppModel(client: oldFake,
+                                cache: OverviewCacheStore(directory: directory))
+        oldModel.startAutoRefresh(interval: 0.4)   // stand-in for the old 5s
+        try? await Task.sleep(nanoseconds: 2_600_000_000)
+        oldModel.stopAutoRefresh()
+
+        let newFake = FakeEngineClient()
+        let newModel = AppModel(client: newFake,
+                                cache: OverviewCacheStore(directory: directory))
+        newModel.startAutoRefresh(interval: 1.2)   // stand-in for the new 30s
+        try? await Task.sleep(nanoseconds: 2_600_000_000)
+        newModel.stopAutoRefresh()
+
+        XCTAssertGreaterThanOrEqual(oldFake.negotiateCount, 4)
+        XCTAssertGreaterThanOrEqual(newFake.negotiateCount, 1)
+        XCTAssertLessThanOrEqual(newFake.negotiateCount, 3)
+        XCTAssertGreaterThan(oldFake.negotiateCount, newFake.negotiateCount,
+                             "同一窗口内新节律的自动刷新轮数必须更少")
+    }
+
+    /// 面板、详情同时打开不增加重复采集：详情窗口的加载是纯读查询
+    /// （runs.get/tasks.get），不向引擎追加 refresh.request 采集请求。
+    func testDetailWindowLoadsAddNoCollectionRequests() async {
+        let fake = FakeEngineClient()
+        fake.overviewEnvelope = FakeEngineClient.fixture(activeRuns: 1, attention: 0)
+        let model = AppModel(client: fake,
+                             cache: OverviewCacheStore(directory: directory))
+        await model.refresh(reason: "panel-open")
+        let before = fake.refreshReasons.count
+
+        model.openRunDetail(project: "/tmp/projA", runID: "R001")
+        let detail = RunDetailModel(client: fake,   // the SHARED engine client
+                                    identity: model.selectedRun!)
+        for _ in 0..<3 { await detail.load() }      // detail-open + cadence loads
+
+        XCTAssertGreaterThanOrEqual(fake.runDetailFetchCount, 3,
+                                    "详情加载确实发生了（读查询）")
+        XCTAssertEqual(fake.refreshReasons.count, before,
+                       "详情窗口的加载不向引擎追加 refresh.request 采集请求")
+    }
+
     // MARK: badge semantics
 
     func testBadgeCountsOnlyActiveRunsNeverAttentionOrTasks() async {
@@ -275,7 +405,8 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.settings.notificationsEnabled,
                        "通知默认关闭")
         XCTAssertNil(model.settings.dataDirectoryOverride)
-        XCTAssertEqual(model.settings.panelRefreshInterval, 5)
+        XCTAssertEqual(model.settings.panelRefreshInterval, 30,
+                       "G012：面板/详情默认刷新间隔降为 30 秒")
     }
 
     func testSettingMutationsPersistThroughTheStore() {
@@ -287,12 +418,29 @@ final class AppModelTests: XCTestCase {
         model.setDataDirectoryOverride("/tmp/custom-data")
         let saved = store.load()
         XCTAssertEqual(saved.panelRefreshInterval, 30)
+        XCTAssertTrue(saved.panelRefreshIntervalChosen,
+                      "设置页选择刷新偏好是显式选择")
         XCTAssertEqual(saved.dataDirectoryOverride, "/tmp/custom-data")
         XCTAssertEqual(saved.resolvedSocketPath(environment: [:]),
                        "/tmp/custom-data/engine.sock")
         // clearing the override restores the default resolution
         model.setDataDirectoryOverride(nil)
         XCTAssertNil(store.load().dataDirectoryOverride)
+    }
+
+    /// An unrelated settings save (e.g. a notifications toggle) re-persists
+    /// the interval WITHOUT inventing or losing explicitness.
+    func testIncidentalResaveKeepsExplicitRefreshChoice() {
+        let store = InMemoryAppSettingsStore()
+        let model = AppModel(client: FakeEngineClient(),
+                             cache: OverviewCacheStore(directory: directory),
+                             settingsStore: store)
+        model.setPanelRefreshInterval(10)
+        model.disableNotifications()          // unrelated save path
+        let saved = store.load()
+        XCTAssertEqual(saved.panelRefreshInterval, 10,
+                       "无关设置保存不重置刷新偏好")
+        XCTAssertTrue(saved.panelRefreshIntervalChosen)
     }
 
     // MARK: T011 — notification enable/disable (permission only on opt-in)

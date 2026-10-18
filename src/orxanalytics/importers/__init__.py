@@ -18,6 +18,20 @@ from ..store import Store
 import json
 from pathlib import Path
 
+# zcode model_usage token/metadata columns mirrored into zc_requests (store
+# v4). The source schema varies between installs: a column the installed
+# database lacks is mirrored as NULL and named in the import result's
+# `model_usage_columns_missing` — never guessed, never zero-filled.
+_MODEL_USAGE_TOKEN_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("input_tokens", "input_tokens"),
+    ("output_tokens", "output_tokens"),
+    ("reasoning_tokens", "reasoning_tokens"),
+    ("cache_read_input_tokens", "cache_read"),
+    ("cache_creation_input_tokens", "cache_creation"),
+    ("provider_total_tokens", "provider_total"),
+    ("computed_total_tokens", "computed_total"),
+)
+
 
 def import_zcode(store: Store, db: Path = ZCODE_DB) -> dict:
     source_id = f"zcode:{db}"
@@ -66,23 +80,36 @@ def import_zcode(store: Store, db: Path = ZCODE_DB) -> dict:
                 counts["turns"] += a == "inserted"
             cur_req = int(store.get_state(source_id, "model_usage_rowid") or 0)
             max_req = cur_req
-            for r in conn.execute(
+            mu_cols = {r[1] for r in conn.execute(
+                "PRAGMA table_info(model_usage)")}
+            token_cols = [src for src, _dst in _MODEL_USAGE_TOKEN_COLUMNS
+                          if src in mu_cols]
+            missing_cols = [src for src, _dst in _MODEL_USAGE_TOKEN_COLUMNS
+                            if src not in mu_cols]
+            req_sql = (
                 "SELECT rowid, logical_request_id, attempt_index, session_id, "
                 "turn_id, provider_id, model_id, status, started_at, "
-                "completed_at FROM model_usage WHERE rowid > ? "
-                "ORDER BY rowid", (cur_req,)
-            ):
+                "completed_at"
+                + (", " + ", ".join(token_cols) if token_cols else "")
+                + " FROM model_usage WHERE rowid > ? ORDER BY rowid")
+            for r in conn.execute(req_sql, (cur_req,)):
                 max_req = max(max_req, r["rowid"])
-                a = store.upsert("zc_requests", {
+                row = {
                     "session_id": r["session_id"],
                     "logical_request_id": r["logical_request_id"],
                     "attempt_index": r["attempt_index"],
                     "turn_id": r["turn_id"], "provider_id": r["provider_id"],
                     "model_id": r["model_id"], "status": r["status"],
                     "started_ms": r["started_at"],
-                    "completed_ms": r["completed_at"]},
-                    ["session_id", "logical_request_id", "attempt_index"])
+                    "completed_ms": r["completed_at"]}
+                for src, dst in _MODEL_USAGE_TOKEN_COLUMNS:
+                    row[dst] = r[src] if src in mu_cols else None
+                a = store.upsert("zc_requests", row,
+                                 ["session_id", "logical_request_id",
+                                  "attempt_index"])
                 counts["requests"] += a == "inserted"
+            if missing_cols:
+                counts["model_usage_columns_missing"] = missing_cols
             store.set_state(source_id, "model_usage_rowid", str(max_req))
 
             cur_tool = int(store.get_state(source_id, "tool_usage_rowid") or 0)

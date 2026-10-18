@@ -8,7 +8,8 @@ the data-dir's engine is serving, spawning the module engine process
 when none is (an incompatible live engine is reported, never taken
 over); and (3) spawns a detached demand holder that keeps one socket
 connection and renews the CLI's own "background" lease. The engine owns
-collection cadence (5/15/60s tiers, coalesced refresh jobs).
+collection cadence (30/60/300s tiers, lowered from 5/15/60s by the G012
+user-feedback cadence fix, coalesced refresh jobs).
 
 - ``watch stop`` releases exactly the CLI's demand — the engine keeps
   serving the app's demand (App/CLI coexistence, exiting one side never
@@ -42,8 +43,12 @@ from .store import Store, now_iso
 
 DEFAULT_INTERVAL_SEC = 600   # legacy compat: `watch once --interval`
 
-# holder / spawn tuning (background leases expire after 90s in the engine)
-HOLDER_RENEW_SEC = 30.0
+# holder / spawn tuning. Each renewal is one refresh.request that BOTH
+# renews the background lease (360s in the engine) and submits one
+# coalesced background job, so the cadence is pinned to the engine's
+# active tier (60s): it must neither outpace the tier nor let the lease
+# lapse (tests assert both invariants).
+HOLDER_RENEW_SEC = 60.0
 HOLDER_CONNECT_TIMEOUT = 5.0
 HOLDER_RECONNECT_WINDOW = 300.0    # engine unreachable this long => give up
 HOLDER_STOP_WAIT = 5.0

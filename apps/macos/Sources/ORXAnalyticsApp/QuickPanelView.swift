@@ -70,17 +70,17 @@ struct QuickPanelView: View {
     private var statusLine: String {
         var parts: [String] = []
         if let cached = model.cachedOverview {
-            parts.append("进行中 \(cached.envelope.summary.activeRuns)")
+            parts.append("进行中 \(MetricsFormat.countText(cached.envelope.summary.activeRuns))")
             // 控制层概览：进行中的执行里有多少处于已暂停/取消中控制态
             // （G011 分层——两个维度并列，不改写执行事实）
             let panel = PanelModel.build(cached.envelope)
             let control = panel.activeControlCounts
-                .map { "\($0.label) \($0.count)" }
+                .map { "\($0.label) \(MetricsFormat.countText($0.count))" }
                 .joined(separator: "、")
             if !control.isEmpty {
                 parts.append("（\(control)）")
             }
-            parts.append("需要关注 \(cached.envelope.summary.attention)")
+            parts.append("需要关注 \(MetricsFormat.countText(cached.envelope.summary.attention))")
         }
         switch model.connection {
         case .idle: parts.append("未连接")
@@ -159,7 +159,7 @@ struct QuickPanelView: View {
     // MARK: sections (needsAttention first — 异常优先排序)
 
     private func attentionSection(_ panel: PanelModel) -> some View {
-        section(title: "需要关注（\(panel.needsAttention.count) 个执行）") {
+        section(title: "需要关注（\(MetricsFormat.countText(panel.needsAttention.count)) 个执行）") {
             if panel.needsAttention.isEmpty {
                 Text("没有需要关注的执行").font(.caption)
                     .foregroundStyle(.secondary)
@@ -172,7 +172,7 @@ struct QuickPanelView: View {
     }
 
     private func activeSection(_ panel: PanelModel) -> some View {
-        section(title: "进行中（\(panel.active.count) 个执行）") {
+        section(title: "进行中（\(MetricsFormat.countText(panel.active.count)) 个执行）") {
             if panel.active.isEmpty {
                 Text("当前没有进行中的执行").font(.caption)
                     .foregroundStyle(.secondary)
@@ -185,7 +185,7 @@ struct QuickPanelView: View {
     }
 
     private func recentSection(_ panel: PanelModel) -> some View {
-        section(title: "最近完成（\(panel.recentCompleted.count)）") {
+        section(title: "最近完成（\(MetricsFormat.countText(panel.recentCompleted.count))）") {
             if panel.recentCompleted.isEmpty {
                 Text("最近没有完成的执行").font(.caption)
                     .foregroundStyle(.secondary)
@@ -203,7 +203,9 @@ struct QuickPanelView: View {
                          panel: PanelModel) -> some View {
         Button {
             model.openRunDetail(project: card.run.project, runID: card.run.runID)
-            openWindow(id: "run-detail")
+            // G012 用户反馈 2: 激活应用并把（已存在或新建的）单一详情
+            // 窗口前置取键——openWindow 本身不保证前置被遮挡的窗口。
+            DetailWindowRouting.openRunDetailFrontmost(openWindow)
         } label: {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
@@ -212,13 +214,20 @@ struct QuickPanelView: View {
                         .lineLimit(1)
                     Spacer()
                     // 控制层徽标（G011 分层）：目标控制状态与执行状态并列
-                    // 呈现——已暂停 Goal 下仍执行中的 Run 两个维度同时可见
+                    // 呈现——已暂停 Goal 下仍执行中的 Run 两个维度同时可见。
+                    // 终态 done 降为普通文字（G012 用户反馈 3）。
                     if let badge = card.controlBadgeText {
                         Text(badge)
                             .font(.caption2)
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(RoundedRectangle(cornerRadius: 3)
                                 .fill(Color.orange.opacity(0.18)))
+                            .help("Goal 控制状态（与执行状态分立）")
+                    } else if let plain = card.controlPlainText {
+                        // 已完成是预期的终态：文字仍可见，但不徽标强调
+                        Text(plain)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                             .help("Goal 控制状态（与执行状态分立）")
                     }
                     Text(card.run.status.display).font(.caption)
@@ -280,7 +289,7 @@ struct QuickPanelView: View {
         HStack {
             Button("查看全部执行…") {
                 model.openAllRuns()
-                openWindow(id: "run-detail")
+                DetailWindowRouting.openRunDetailFrontmost(openWindow)
             }
             Spacer()
             Button("设置…") {

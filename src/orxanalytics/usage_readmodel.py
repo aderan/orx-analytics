@@ -397,6 +397,126 @@ def project_unattributed(store: Store, project_key: str,
 
 # ------------------------------------------------- native session preview ---
 
+# G012 (用户反馈 5): statuses of a zcode model_usage request row that carry
+# FINAL numbers — the same vocabulary ORX's own read-only reader uses
+# (src/orx/zcode_sessions.py, read from the real database 2026-10-16). A row
+# with any other status (a request still streaming) is counted in
+# ``settling_request_rows``; its numbers make the preview's cumulative sums
+# provisional, which is stated, never hidden.
+TERMINAL_REQUEST_STATUSES = frozenset({"completed", "error", "cancelled"})
+
+_REQUEST_FIELDS = ("input_tokens", "output_tokens", "reasoning_tokens",
+                   "cache_read", "cache_creation", "provider_total",
+                   "computed_total")
+
+
+def request_totals(store: Store, session_ids: list[str]) -> dict[str, Any]:
+    """model_usage request caliber over the ``zc_requests`` mirror.
+
+    One request is ``(session_id, logical_request_id, attempt_index)`` —
+    the mirror's natural primary key, so every request is counted exactly
+    once however often it was imported (repeated collection never double
+    counts). zcode cache semantics: ``cache_read`` is a SUBSET of input, so
+    the derived ``processed_tokens`` is input + output and never adds cache
+    on top; ``turn_usage`` is a different granularity and is never summed
+    into this caliber. An error-status row whose token fields are explicit
+    zeros is a placeholder, not a free request: counted as a request and
+    flagged in ``error_rows_zero_tokens``. NULL fields stay NULL — partial
+    sums with per-field missing counts, never zero-filled.
+    """
+    out: dict[str, Any] = {
+        "caliber": "model_usage_requests",
+        "source": "zcode model_usage mirror (zc_requests; read-only import)",
+        "session_ids": sorted(set(session_ids)),
+        "requests": 0,
+        "status_counts": {},
+        "settling_request_rows": 0,
+        "error_rows_zero_tokens": 0,
+        "processed_rule": "processed = input + output; cache_read is a "
+                          "subset of input and is never added on top; "
+                          "turn_usage is a different caliber and is never "
+                          "stacked",
+        "last_activity_ms": None,
+    }
+    for f in _REQUEST_FIELDS:
+        out[f] = None
+    out["processed_tokens"] = None
+    out["missing_fields"] = {f: 0 for f in _REQUEST_FIELDS}
+    out["rows_missing_processed"] = 0
+    ids = sorted(set(session_ids))
+    if not ids:
+        return out
+    qmarks = ",".join("?" * len(ids))
+    rows = store.conn.execute(
+        f"SELECT status, started_ms, completed_ms, "
+        f"{', '.join(_REQUEST_FIELDS)} FROM zc_requests "
+        f"WHERE session_id IN ({qmarks})", ids).fetchall()
+    sums: dict[str, int] = {f: 0 for f in _REQUEST_FIELDS}
+    seen_any: dict[str, bool] = {f: False for f in _REQUEST_FIELDS}
+    processed: list[int] = []
+    last_ms: list[int] = []
+    for r in rows:
+        out["requests"] += 1
+        sc = r["status"] or "unknown"
+        out["status_counts"][sc] = out["status_counts"].get(sc, 0) + 1
+        if sc not in TERMINAL_REQUEST_STATUSES:
+            out["settling_request_rows"] += 1
+        if sc == "error" and r["input_tokens"] == 0 \
+                and r["output_tokens"] == 0:
+            out["error_rows_zero_tokens"] += 1
+        for f in _REQUEST_FIELDS:
+            v = r[f]
+            if v is None:
+                out["missing_fields"][f] += 1
+            else:
+                sums[f] += v
+                seen_any[f] = True
+        if r["input_tokens"] is not None and r["output_tokens"] is not None:
+            processed.append(r["input_tokens"] + r["output_tokens"])
+        else:
+            out["rows_missing_processed"] += 1
+        for t in (r["completed_ms"], r["started_ms"]):
+            if t is not None:
+                last_ms.append(t)
+    for f in _REQUEST_FIELDS:
+        if seen_any[f]:
+            out[f] = sums[f]
+    if processed:
+        out["processed_tokens"] = sum(processed)
+    if last_ms:
+        out["last_activity_ms"] = max(last_ms)
+    return out
+
+
+def _directory_matches(directory: str | None, project_key: str) -> bool:
+    """Exact or symlink-resolved equality — both spellings of the same
+    directory match; a different directory never does (ORX G009 semantics,
+    shared with src/orx/zcode_sessions.py)."""
+    if directory is None:
+        return False
+    if directory == project_key:
+        return True
+    import os
+    try:
+        return os.path.realpath(directory) == os.path.realpath(project_key)
+    except OSError:                                  # pragma: no cover
+        return False
+
+
+def _root_ancestor(sessions: dict[str, dict], sid: str) -> str | None:
+    """Follow session.parent_id up to the root session. Cycle-safe; a
+    missing row anywhere on the chain means no root can be proven."""
+    seen: set[str] = set()
+    cur: str | None = sid
+    while cur is not None and cur not in seen and cur in sessions:
+        seen.add(cur)
+        nxt = sessions[cur]["parent_id"]
+        if nxt is None:
+            return cur
+        cur = nxt
+    return None
+
+
 def _turn_totals(store: Store, session_ids: list[str]) -> dict[str, Any]:
     if not session_ids:
         return {"turns": 0, "input_tokens": None, "output_tokens": None,
@@ -489,39 +609,141 @@ def native_session_preview(store: Store, project_key: str,
                     "session_ids": inter,
                     "attempt_ids": sorted(set(aids_a) | set(aids_b))})
 
-    # controller sessions: root sessions that are parents of sessions
-    # linked to attempts (and not linked themselves). OWN usage only —
-    # their worker descendants belong to their attempts' books. Counted
-    # toward a run only when the child evidence names exactly one run.
+    # controller sessions (G012 用户反馈 5): the ROOT ancestor (parent_id
+    # chain, however deep) of sessions linked to attempts — not linked to
+    # any attempt itself. OWN usage only, in the model_usage request
+    # caliber: worker/verifier descendants belong to their attempts' books
+    # and must never be stacked on top. The anchors that tie children to
+    # attempts (stored session_ref / ORX v11 ORX_ASSIGNMENT nonce via
+    # correlate) are the ONLY attribution evidence; the session's directory
+    # is recorded as a fact (alias-resolved), never used to guess, and a
+    # controller whose children span several runs stays unattributed with
+    # the reason stated.
     all_atts = {r["id"]: dict(r) for r in store.conn.execute(
-        "SELECT id, run_id FROM orx_attempts WHERE snapshot_id=?", (snap,))}
+        "SELECT id, run_id, role, session_ref, nonce FROM orx_attempts "
+        "WHERE snapshot_id=?", (snap,))}
     linked_ids = {l.session_id for l in links if l.confidence != "ambiguous"}
     all_links = [l for l in correlate.links_for_snapshot(store,
                                                          project_key, snap)
                  if l.confidence != "ambiguous"]
-    child_runs: dict[str, set] = {}
+    roots: dict[str, list] = {}
     for l in all_links:
-        s = sessions.get(l.session_id)
-        if s and s["parent_id"]:
-            child_runs.setdefault(s["parent_id"], set()).add(
-                all_atts.get(l.attempt_id, {}).get("run_id"))
+        root = _root_ancestor(sessions, l.session_id)
+        if root is None or root == l.session_id:
+            continue        # the linked session IS a root: an attempt book
+        if root in linked_ids:
+            continue        # root itself is linked: nested attempt session
+        roots.setdefault(root, []).append(l)
     controllers = []
-    for parent_sid, runs in sorted(child_runs.items()):
-        if parent_sid in linked_ids:
-            continue                     # itself linked: attempt book
-        ps = sessions.get(parent_sid)
-        if ps is None or ps["directory"] != project_key:
+    for root_sid, children in sorted(roots.items()):
+        ps = sessions.get(root_sid)
+        if ps is None:
             continue
+        runs: set = set()
+        evidence = []
+        for l in children:
+            a = all_atts.get(l.attempt_id, {})
+            runs.add(a.get("run_id"))
+            evidence.append({
+                "session_id": l.session_id, "attempt_id": l.attempt_id,
+                "role": a.get("role"), "authority": l.authority,
+                "confidence": l.confidence,
+                "nonce": l.evidence.get("nonce") or a.get("nonce")})
         known = {r for r in runs if r is not None}
         attributed = len(known) == 1 and len(runs) == len(known)
+        if attributed:
+            reason = None
+        elif len(known) > 1:
+            reason = (f"child sessions link to attempts of {len(known)} "
+                      f"different runs {sorted(known)}; controller usage "
+                      f"cannot be attributed to one run and is not split "
+                      f"by guesswork")
+        else:
+            reason = ("a child attempt has no run_id (run association "
+                      "unknown); controller usage stays unattributed")
         controllers.append({
-            "session_id": parent_sid,
-            "own_usage": _turn_totals(store, [parent_sid]),
+            "session_id": root_sid,
+            "directory": ps["directory"],
+            "directory_matches_project": _directory_matches(
+                ps["directory"], project_key),
+            "created_ms": ps["created_ms"], "updated_ms": ps["updated_ms"],
+            "own_usage": request_totals(store, [root_sid]),
             "run_attribution": {
                 "attributed": attributed,
                 "runs": sorted(known),
-                "basis": "parent of sessions linked to attempts of these "
-                         "runs; own usage only, descendants excluded"}})
+                "reason": reason,
+                "basis": "root ancestor (session.parent_id chain, any "
+                         "depth) of subagent sessions whose first prompts "
+                         "carry this project's attempt anchors (stored "
+                         "attempts.session_ref or the ORX v11 "
+                         "ORX_ASSIGNMENT nonce); own usage only — worker/"
+                         "verifier descendants belong to their attempts' "
+                         "books; directory recorded as a fact (alias-"
+                         "resolved), never used to guess",
+                "child_evidence": evidence}})
+
+    # per-run verdict for the detail view: which controller session(s) this
+    # run can claim, or the honest reason it cannot. No token numbers live
+    # at this level (the preview top level carries none by contract).
+    run_zcode_atts = [a for a in atts if a["harness"] == "zcode"]
+    linked_run_atts = {l.attempt_id for l in links
+                       if l.confidence != "ambiguous"}
+    attributed_here = [c for c in controllers
+                       if c["run_attribution"]["attributed"]
+                       and c["run_attribution"]["runs"] == [run_id]]
+    mentions_here = [c for c in controllers
+                     if run_id in c["run_attribution"]["runs"]]
+    if attributed_here:
+        controller_for_run = {
+            "run_id": run_id, "status": "attributed",
+            "session_ids": [c["session_id"] for c in attributed_here],
+            "reason": None,
+            "note": "controller own usage (model_usage request caliber) "
+                    "for this run; see controller_sessions entries"}
+    elif mentions_here:
+        controller_for_run = {
+            "run_id": run_id, "status": "unattributed",
+            "session_ids": [c["session_id"] for c in mentions_here],
+            "reason": mentions_here[0]["run_attribution"]["reason"],
+            "note": "controller session evidence exists but is not unique "
+                    "to this run; usage stays unattributed, never prorated"}
+    elif not run_zcode_atts:
+        controller_for_run = {
+            "run_id": run_id, "status": "no_zcode_attempts",
+            "session_ids": [],
+            "reason": "this run has no zcode attempts; the controller "
+                      "session caliber only exists for zcode-driven runs",
+            "note": None}
+    elif not any(a["id"] in linked_run_atts for a in run_zcode_atts):
+        controller_for_run = {
+            "run_id": run_id, "status": "host_session_unbound",
+            "session_ids": [],
+            "reason": "none of this run's zcode attempts is bound to a "
+                      "session (ORX records usage_missing_reason "
+                      "'host_session_unbound' for such attempts); the "
+                      "controller session cannot be identified",
+            "note": None}
+    else:
+        missing_mirror = sorted({l.session_id for l in links
+                                 if l.confidence != "ambiguous"
+                                 and l.session_id not in sessions})
+        if missing_mirror:
+            controller_for_run = {
+                "run_id": run_id, "status": "session_not_imported",
+                "session_ids": [],
+                "reason": "this run has linked session id(s) "
+                          f"{missing_mirror} that the zcode session mirror "
+                          f"does not carry (source not imported or session "
+                          f"unknown); controller usage stays unattributed",
+                "note": None}
+        else:
+            controller_for_run = {
+                "run_id": run_id, "status": "no_controller_session",
+                "session_ids": [],
+                "reason": "linked sessions exist but their root ancestor "
+                          "is itself linked to an attempt; no separate "
+                          "controller session was found",
+                "note": None}
 
     updated = [s["updated_ms"] for s in sessions.values()
                if s["updated_ms"] is not None]
@@ -536,9 +758,12 @@ def native_session_preview(store: Store, project_key: str,
         "shared_session_trees": shared,
         "subtree_conflicts": conflicts,
         "controller_sessions": controllers,
+        "controller_for_run": controller_for_run,
         "never_sum_with": CALIBER_ORX,
         "note": "cumulative native-session numbers, a separate caliber "
                 "from orx_recorded; never added to it and no combined "
                 "total exists; unsplit multi-attempt sessions keep their "
-                "totals with an explicit refusal reason",
+                "totals with an explicit refusal reason; controller own "
+                "usage is the model_usage request caliber (deduped by "
+                "session_id + logical_request_id + attempt_index)",
     }

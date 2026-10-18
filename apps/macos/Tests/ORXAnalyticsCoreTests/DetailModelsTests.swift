@@ -60,7 +60,24 @@ final class DetailModelsTests: XCTestCase {
         XCTAssertEqual(preview.union?.tokens?.inputTokens, 600)
         XCTAssertEqual(preview.union?.sessions?.count, 2)
         XCTAssertEqual(preview.linkedAttempts?.first?.treeTotals?.turns, 10)
-        XCTAssertEqual(preview.controllerSessions?.first?.ownUsage?.inputTokens, 100)
+        // controller own usage is the model_usage REQUEST caliber: deduped
+        // per request identity, cache a subset of input, processed =
+        // input + output — never turn_usage, never descendants
+        let own = try XCTUnwrap(preview.controllerSessions?.first?.ownUsage)
+        XCTAssertEqual(own.caliber, "model_usage_requests")
+        XCTAssertEqual(own.requests, 2)
+        XCTAssertEqual(own.inputTokens, 4_000_000)
+        XCTAssertEqual(own.cacheRead, 3_700_000)
+        XCTAssertEqual(own.processedTokens, 4_060_000)
+        XCTAssertEqual(own.statusCounts?["completed"], 2)
+        XCTAssertEqual(own.errorRowsZeroTokens, 0)
+        XCTAssertEqual(preview.controllerSessions?.first?.directoryMatchesProject, true)
+        // the per-run verdict names the session; no token number at the
+        // preview's top level
+        let verdict = try XCTUnwrap(preview.controllerForRun)
+        XCTAssertEqual(verdict.status, "attributed")
+        XCTAssertEqual(verdict.sessionIDs, ["root-sess"])
+        XCTAssertNil(verdict.reason)
     }
 
     func testRunNotFoundStillDecodes() throws {
@@ -114,7 +131,8 @@ final class DetailModelsTests: XCTestCase {
                                       preview: decodedRunDetail()?.nativePreview)
         XCTAssertEqual(calibers.orxRows.map(\.label),
                        ["输入", "输出", "缓存（cached_input）"])
-        XCTAssertEqual(calibers.orxRows.map(\.text), ["1000", "200", "—"])
+        // G012：输入 1000 按统一格式器分组显示为 "1,000"
+        XCTAssertEqual(calibers.orxRows.map(\.text), ["1,000", "200", "—"])
         XCTAssertEqual(calibers.nativeRows.map(\.label).first, "会话轮次")
         XCTAssertEqual(calibers.nativeRows.map(\.text),
                        ["12", "600", "120", "30", "60", "6"])
@@ -129,6 +147,140 @@ final class DetailModelsTests: XCTestCase {
         let calibers = DetailCalibers(usage: nil, preview: nil)
         XCTAssertEqual(calibers.orxRows.map(\.text), ["—", "—", "—"])
         XCTAssertEqual(calibers.nativeRows.map(\.text).prefix(1), ["—"])
+    }
+
+    // MARK: - controller native preview presentation (G012 用户反馈 5)
+
+    func testControllerPresentationShowsTokensSourceAndBasis() throws {
+        let envelope = try JSONDecoder().decode(RunDetailEnvelope.self,
+                                                from: Self.runDetailJSON)
+        let p = ControllerUsagePresentation.build(preview: envelope.nativePreview)
+        XCTAssertEqual(p.statusText, "已按唯一证据归属本执行")
+        XCTAssertEqual(p.sessionText, "root-sess")
+        // unified 3-digit grouping via the shared formatter
+        XCTAssertEqual(p.lines.map(\.text),
+                       ["2", "4,000,000", "60,000", "3,700,000", "4,060,000"])
+        XCTAssertEqual(p.lines.map(\.label),
+                       ["请求数", "输入", "输出", "缓存读（input 子集）", "处理量（input＋output）"])
+        XCTAssertTrue(p.sourceText?.hasPrefix("zcode model_usage mirror") == true)
+        XCTAssertEqual(p.updatedMS, 1_790_000_000_900)
+        XCTAssertEqual(p.usageLastActivityMS, 1_790_000_000_500)
+        XCTAssertTrue(p.evidenceText?.contains("root ancestor") == true)
+        XCTAssertTrue(p.directoryText?.contains("与项目根一致") == true)
+        XCTAssertTrue(p.hasAttributedUsage)
+        XCTAssertNil(p.caveatText)
+        // the controller request caliber is NEVER merged with the ORX
+        // caliber: the fixture's ORX input is 1,000, so any view that
+        // added them would render 4,001,000 — no presentation row does
+        let texts = p.lines.map(\.text)
+        XCTAssertFalse(texts.contains("4,001,000"),
+                       "controller 与 ORX 两口径绝不相加")
+    }
+
+    func testControllerPresentationUnattributedShowsReasonNotZeros() throws {
+        let envelope = try JSONDecoder().decode(RunDetailEnvelope.self,
+                                                from: Self.runDetailJSON)
+        let preview = try XCTUnwrap(envelope.nativePreview)
+        // shared across runs: evidence exists but is not unique to R001
+        let sharedJSON = """
+        {"run_id": "R001", "status": "unattributed",
+         "session_ids": ["root-sess"],
+         "reason": "child sessions link to attempts of 2 different runs ['R001', 'R002']; controller usage cannot be attributed to one run and is not split by guesswork",
+         "note": null}
+        """
+        let verdict = try JSONDecoder().decode(ControllerForRun.self,
+                                               from: Data(sharedJSON.utf8))
+        let rebuilt = NativePreview(
+            caliber: preview.caliber, project: preview.project,
+            runID: preview.runID, snapshotID: preview.snapshotID,
+            asOf: preview.asOf, asOfSessionsMS: preview.asOfSessionsMS,
+            linkedAttempts: preview.linkedAttempts, union: preview.union,
+            sharedSessionTrees: preview.sharedSessionTrees,
+            subtreeConflicts: preview.subtreeConflicts,
+            controllerSessions: preview.controllerSessions,
+            controllerForRun: verdict,
+            neverSumWith: preview.neverSumWith, note: preview.note)
+        let p = ControllerUsagePresentation.build(preview: rebuilt)
+        XCTAssertEqual(p.statusText, "无法唯一归属（跨执行共享，不摊分）")
+        XCTAssertTrue(p.reasonText?.contains("different runs") == true)
+        XCTAssertEqual(p.sessionText, "root-sess")
+        // the session's own cumulative total is a FACT and is shown — but
+        // labeled as shared, never attributed to this run, never prorated
+        XCTAssertTrue(p.hasSessionUsage)
+        XCTAssertFalse(p.hasAttributedUsage)
+        XCTAssertEqual(p.lines.map(\.text),
+                       ["2", "4,000,000", "60,000", "3,700,000", "4,060,000"])
+        let caveat = try XCTUnwrap(p.sharedCaveatText)
+        XCTAssertTrue(caveat.contains("跨多个 run 共享"), caveat)
+        XCTAssertTrue(caveat.contains("绝不按 run 摊分"), caveat)
+        // no unknown field is ever zero-filled
+        XCTAssertEqual(p.lines.map(\.label),
+                       ["请求数", "输入", "输出", "缓存读（input 子集）", "处理量（input＋output）"])
+    }
+
+    func testControllerPresentationUnboundAndUnknownStayExplicit() {
+        let unboundPreview = NativePreview(
+            caliber: "native_session_preview", project: nil, runID: nil,
+            snapshotID: nil, asOf: nil, asOfSessionsMS: nil,
+            linkedAttempts: nil, union: nil, sharedSessionTrees: nil,
+            subtreeConflicts: nil, controllerSessions: [],
+            controllerForRun: ControllerForRun(
+                runID: "R001", status: "host_session_unbound",
+                sessionIDs: [],
+                reason: "none of this run's zcode attempts is bound to a session",
+                note: nil),
+            neverSumWith: "orx_recorded", note: nil)
+        let p = ControllerUsagePresentation.build(preview: unboundPreview)
+        XCTAssertEqual(p.statusText, "未绑定会话（host_session_unbound）")
+        XCTAssertTrue(p.reasonText?.contains("bound to a session") == true)
+        XCTAssertTrue(p.lines.isEmpty)
+        // nothing at all: unknown, never a guessed number
+        let none = ControllerUsagePresentation.build(preview: nil)
+        XCTAssertEqual(none.statusText, "未知")
+        XCTAssertTrue(none.lines.isEmpty)
+        XCTAssertFalse(none.hasAttributedUsage)
+        XCTAssertNil(none.updatedMS)
+    }
+
+    func testControllerPresentationFlagsErrorZeroPlaceholderAndSettling() throws {
+        let own = RequestUsage(caliber: "model_usage_requests",
+                               source: "zcode model_usage mirror",
+                               requests: 3, inputTokens: 100, outputTokens: 10,
+                               reasoningTokens: nil, cacheRead: 90,
+                               cacheCreation: nil, providerTotal: nil,
+                               computedTotal: nil, processedTokens: 110,
+                               processedRule: nil,
+                               statusCounts: ["completed": 2, "error": 1],
+                               settlingRequestRows: 1,
+                               errorRowsZeroTokens: 1,
+                               missingFields: ["input_tokens": 1],
+                               rowsMissingProcessed: 1,
+                               lastActivityMS: 1_790_000_000_500)
+        let session = ControllerSession(sessionID: "root-sess",
+                                        directory: "/tmp/projA",
+                                        directoryMatchesProject: false,
+                                        createdMS: 1, updatedMS: 2,
+                                        ownUsage: own,
+                                        runAttribution: nil)
+        let preview = NativePreview(caliber: "native_session_preview",
+                                    project: nil, runID: nil, snapshotID: nil,
+                                    asOf: nil, asOfSessionsMS: nil,
+                                    linkedAttempts: nil, union: nil,
+                                    sharedSessionTrees: nil,
+                                    subtreeConflicts: nil,
+                                    controllerSessions: [session],
+                                    controllerForRun: ControllerForRun(
+                                        runID: "R001", status: "attributed",
+                                        sessionIDs: ["root-sess"],
+                                        reason: nil, note: nil),
+                                    neverSumWith: "orx_recorded", note: nil)
+        let p = ControllerUsagePresentation.build(preview: preview)
+        let caveat = try XCTUnwrap(p.caveatText)
+        XCTAssertTrue(caveat.contains("错误请求 1 行为零占位"), caveat)
+        XCTAssertTrue(caveat.contains("未完成请求 1 行"), caveat)
+        XCTAssertTrue(caveat.contains("input_tokens 缺 1 行"), caveat)
+        // a foreign directory is a recorded fact, never a veto
+        XCTAssertTrue(p.directoryText?.contains("与项目根不同") == true)
     }
 
     private func decodedRunDetail() -> RunDetailEnvelope? {
@@ -237,10 +389,34 @@ final class DetailModelsTests: XCTestCase {
            "shared_session_trees": [], "subtree_conflicts": [],
            "controller_sessions": [
              {"session_id": "root-sess",
-              "own_usage": {"turns": 2, "input_tokens": 100, "output_tokens": 20,
-                            "reasoning_tokens": null, "cache_read": null, "cache_creation": null},
+              "directory": "/tmp/projA", "directory_matches_project": true,
+              "created_ms": 1790000000000, "updated_ms": 1790000000900,
+              "own_usage": {"caliber": "model_usage_requests",
+                            "source": "zcode model_usage mirror (zc_requests; read-only import)",
+                            "requests": 2,
+                            "input_tokens": 4000000, "output_tokens": 60000,
+                            "reasoning_tokens": 0, "cache_read": 3700000,
+                            "cache_creation": 0, "provider_total": null,
+                            "computed_total": 4060000,
+                            "processed_tokens": 4060000,
+                            "processed_rule": "processed = input + output; cache_read is a subset of input",
+                            "status_counts": {"completed": 2},
+                            "settling_request_rows": 0,
+                            "error_rows_zero_tokens": 0,
+                            "missing_fields": {},
+                            "rows_missing_processed": 0,
+                            "last_activity_ms": 1790000000500},
               "run_attribution": {"attributed": true, "runs": ["R001"],
-                                  "basis": "parent of sessions linked to attempts"}}],
+                                  "reason": null,
+                                  "basis": "root ancestor of subagent sessions carrying this run's attempt anchors",
+                                  "child_evidence": [
+                                    {"session_id": "sess-1", "attempt_id": 1,
+                                     "role": "worker",
+                                     "authority": "session_metadata",
+                                     "confidence": "high", "nonce": null}]}}],
+           "controller_for_run": {"run_id": "R001", "status": "attributed",
+                                  "session_ids": ["root-sess"], "reason": null,
+                                  "note": "controller own usage (model_usage request caliber)"},
            "never_sum_with": "orx_recorded",
            "note": "cumulative native-session numbers, a separate caliber"},
          "snapshots": {"/tmp/projA": {"snapshot_id": 7,

@@ -151,7 +151,8 @@ final class HistoryModelTests: XCTestCase {
         let unknown = Self.run(project: "/tmp/p", runID: "R003", tokens: nil)
 
         let knownRow = HistoryRunRow.build(known, sortKey: "observed_tokens")
-        XCTAssertEqual(knownRow.consumptionText, "已观测 token 1200（全部版本）")
+        // G012：token 千位分隔（统一格式器）
+        XCTAssertEqual(knownRow.consumptionText, "已观测 token 1,200（全部版本）")
         XCTAssertEqual(knownRow.coverageText, "已观测 2/3 次尝试")
         XCTAssertNil(knownRow.unknownNote)
 

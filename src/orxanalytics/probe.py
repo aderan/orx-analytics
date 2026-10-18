@@ -43,7 +43,13 @@ ZCODE_TABLE_FIELDS: dict[str, list[str]] = {
                    "output_tokens", "reasoning_tokens",
                    "cache_read_input_tokens", "cache_creation_input_tokens"],
     "model_usage": ["logical_request_id", "attempt_index", "session_id", "turn_id",
-                    "provider_id", "model_id", "status", "started_at", "completed_at"],
+                    "provider_id", "model_id", "status", "started_at", "completed_at",
+                    # G012: per-request token columns mirrored into
+                    # zc_requests (store v4); a source lacking them still
+                    # imports — the gap is reported here, never guessed.
+                    "input_tokens", "output_tokens", "reasoning_tokens",
+                    "cache_read_input_tokens", "cache_creation_input_tokens",
+                    "provider_total_tokens", "computed_total_tokens"],
     "tool_usage": ["id", "session_id", "turn_id", "tool_name", "status",
                    "started_at", "completed_at", "duration_ms", "exit_code"],
     "part": ["id", "message_id", "session_id", "data", "sequence"],

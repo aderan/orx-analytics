@@ -105,9 +105,18 @@ public final class AppModel: ObservableObject {
     /// Open path: publish cache first, refresh in the background. Never
     /// downgrades: once fresher in-memory data exists, re-opening the
     /// panel does not clobber it with an older cache file.
+    ///
+    /// G012: 重复打开面板不再重复立即刷新 — when a successful round landed
+    /// within the refresh interval the data is fresh enough and the
+    /// immediate round is skipped (the auto loop refreshes on cadence).
+    /// Manual refresh (`refreshNow`) and wake resync stay immediate.
     public func bootstrap() {
         if cachedOverview == nil {
             cachedOverview = cache.load()
+        }
+        if let last = lastRefreshedAt,
+           Date().timeIntervalSince(last) < settings.panelRefreshInterval {
+            return
         }
         Task { await self.refresh(reason: "panel-open") }
     }
@@ -243,19 +252,26 @@ public final class AppModel: ObservableObject {
         await notifier?.post(payload)
     }
 
-    // MARK: - Auto refresh (panel-open tier, design §8: ~5s)
+    // MARK: - Auto refresh (panel-open tier; G012 default 30s)
 
     /// While the panel is open the app holds a "panel-open" demand and
-    /// re-reads the read model about every 5 seconds. This is a STATUS
-    /// cadence — it does not mean token numbers change every 5 seconds.
-    /// The interval is the user's refresh preference (设置页), default 5s.
+    /// re-reads the read model about every `panelRefreshInterval` seconds
+    /// (default 30s, G012 用户反馈 4). This is a STATUS cadence — it does
+    /// not mean token numbers change every round.
+    ///
+    /// Sleep-first: the ONE immediate round on open comes from
+    /// `bootstrap()`; starting the loop never fires a second one (G012:
+    /// 打开面板不重复立即刷新), and this is also the only loop that
+    /// submits `refresh.request` — detail-window loads are pure reads, so
+    /// panel + detail open together never duplicate collection demand.
     public func startAutoRefresh(interval: TimeInterval? = nil) {
         stopAutoRefresh()
         let effective = interval ?? settings.panelRefreshInterval
         autoRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refresh(reason: "panel-open")
                 try? await Task.sleep(nanoseconds: UInt64(effective * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                await self?.refresh(reason: "panel-open")
             }
         }
     }
@@ -300,9 +316,14 @@ public final class AppModel: ObservableObject {
         settings = next
     }
 
-    /// Refresh-preference setter (panel-open interval, seconds).
+    /// Refresh-preference setter (panel-open interval, seconds). An
+    /// explicit choice from the settings page — marked as chosen so later
+    /// upgrades keep it instead of migrating to a new default.
     public func setPanelRefreshInterval(_ interval: TimeInterval) {
-        updateSettings { $0.panelRefreshInterval = interval }
+        updateSettings {
+            $0.panelRefreshInterval = interval
+            $0.panelRefreshIntervalChosen = true
+        }
         applyPanelRefreshPreference()
     }
 

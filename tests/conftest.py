@@ -28,7 +28,10 @@ CREATE TABLE turn_usage (session_id TEXT, turn_id TEXT, status TEXT,
     cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER);
 CREATE TABLE model_usage (logical_request_id TEXT, attempt_index INTEGER,
     session_id TEXT, turn_id TEXT, provider_id TEXT, model_id TEXT,
-    status TEXT, started_at INTEGER, completed_at INTEGER);
+    status TEXT, started_at INTEGER, completed_at INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+    cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+    provider_total_tokens INTEGER, computed_total_tokens INTEGER);
 CREATE TABLE tool_usage (id TEXT, session_id TEXT, turn_id TEXT,
     tool_name TEXT, status TEXT, started_at INTEGER, completed_at INTEGER,
     duration_ms INTEGER, exit_code INTEGER);
@@ -83,17 +86,38 @@ def make_zcode_db(path: Path, project_a: str, project_b: str) -> dict:
     ]
     conn.executemany("INSERT INTO turn_usage VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      turns)
+    # request-level usage mirrors the turn numbers where both exist; a row
+    # repeats the SAME request identity (logical_request_id + attempt_index
+    # + session) once to prove the mirror dedupes by natural key, an error
+    # retry carries explicit zero placeholders, and a running row is still
+    # settling (never terminal). Statuses use zcode's real vocabulary
+    # (completed / error / cancelled / running).
     requests = [
-        ("req_c1", 0, ctrl, "turn_c1", "p1", "model-x", "ok", ts(11), ts(12)),
-        ("req_c2", 0, ctrl, "turn_c2", "p1", "model-x", "ok", ts(101), ts(102)),
-        # w2 shows one logical request retried: attempt 0 errored, 1 ok
-        ("req_w2", 0, w2, "turn_w2", "p1", "model-x", "error", ts(76), ts(77)),
-        ("req_w2", 1, w2, "turn_w2", "p1", "model-x", "ok", ts(78), ts(79)),
-        ("req_w1", 0, w1, "turn_w1", "p1", "model-x", "ok", ts(66), ts(67)),
-        ("req_o", 0, other, "turn_o", "p1", "model-y", "ok", ts(56), ts(57)),
+        ("req_c1", 0, ctrl, "turn_c1", "p1", "model-x", "completed",
+         ts(11), ts(12), 1000000, 20000, 0, 900000, 0, 1020000, 1020000),
+        ("req_c2", 0, ctrl, "turn_c2", "p1", "model-x", "completed",
+         ts(101), ts(102), 3000000, 40000, 0, 2800000, 0, 3040000, 3040000),
+        # w2 shows one logical request retried: attempt 0 errored with the
+        # provider's explicit zero placeholder (flagged, never "free"), 1 ok
+        ("req_w2", 0, w2, "turn_w2", "p1", "model-x", "error",
+         ts(76), ts(77), 0, 0, 0, 0, 0, 0, 0),
+        ("req_w2", 1, w2, "turn_w2", "p1", "model-x", "completed",
+         ts(78), ts(79), 6000000, 35000, 0, 5600000, 0, 6035000, 6035000),
+        ("req_w1", 0, w1, "turn_w1", "p1", "model-x", "completed",
+         ts(66), ts(67), 5000000, 30000, 0, 4700000, 0, 5030000, 5030000),
+        # duplicate record of the SAME request (identical natural key and
+        # values): the mirror counts it once
+        ("req_w1", 0, w1, "turn_w1", "p1", "model-x", "completed",
+         ts(66), ts(67), 5000000, 30000, 0, 4700000, 0, 5030000, 5030000),
+        ("req_o", 0, other, "turn_o", "p1", "model-y", "completed",
+         ts(56), ts(57), 700000, 8000, 0, 600000, 0, 708000, 708000),
+        # still streaming: non-terminal status, numbers provisional
+        ("req_o2", 0, other, "turn_o", "p1", "model-y", "running",
+         ts(58), None, 500, 0, 0, 0, 0, 500, 500),
     ]
-    conn.executemany("INSERT INTO model_usage VALUES (?,?,?,?,?,?,?,?,?)",
-                     requests)
+    conn.executemany(
+        "INSERT INTO model_usage VALUES ("
+        + ",".join("?" for _ in range(16)) + ")", requests)
     tools = [
         ("t1", w1, "turn_w1", "Bash", "completed", ts(66), ts(68), 2000, 0),
         ("t2", w1, "turn_w1", "Read", "completed", ts(70), ts(71), 1000, None),

@@ -91,6 +91,13 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
   启动 `orx_engine_serve.py <data-dir>`（获取单实例文件锁 → 绑定用户
   私有 Unix socket → 有界崩溃重启地运行调度器），等 socket 就绪后重试
   连接。协议版本不兼容时明确报告、不强行接管。
+- **运行时封条（0.4.3 修复，v0.4.2 已披露缺陷）**：`makeChild` 启动引擎
+  子进程时强制设置 `PYTHONDONTWRITEBYTECODE=1`，覆盖继承环境的任何冲突
+  值（含 `0`、空串与未设置——在内置 CPython 3.12 下这三种状态都会写
+  字节码）。v0.4.2 的安装后首启曾向已签名 `.app` 内写入 73 个
+  `__pycache__` pyc，使 `codesign --verify --strict` 由 0 变 1（证据见
+  ORX 仓 `dist/g011/gui-acceptance/seal-break-*`）；构建脚本的封条门禁
+  只能保护构建期，运行期的封条只能由 App 自己守住。
 - 引擎入口说明：`python -m orxanalytics.engine`（engine.main）目前只
   加锁并跑调度器、不绑定 socket，无法服务 App 客户端；包内
   `orx_engine_serve.py` 用同样的公开引擎 API（acquire + start_server +
@@ -101,6 +108,33 @@ Developer ID Application 证书、无 notarytool 存储凭据——**内部预�
   App 时自动重新拉起。
 - 引擎日志在 `<data-dir>/logs/engine-launch.log`（容量有上限）；默认
   data-dir 是 `~/.orx-analytics`，可在设置中显式选择其他目录。
+
+## 安装后封条检查（可重复验证）
+
+发布冻结候选或安装副本验证（面向发布前检查，日常使用不需要）：
+
+```
+python3 scripts/check_runtime_seal.py --app </path/to/App.app> --evidence-dir <DIR>
+```
+
+退出码 0＝封条完好；1＝封条破坏或缺证（含机器可读原因）；2＝用法错误。
+证据目录（必须在 App 外）落盘 `seal-check-report.json`、启动前后两份完整
+bundle 内容快照（每个文件的 SHA-256、symlink 目标、目录）、前后两次
+`codesign --verify --deep --strict` 日志、两轮真实 App 启动日志。检查
+流程：先严格验签并快照 → 以 App 自己的可执行文件拉起两轮（首启经
+`makeChild` ＋ 重启内置引擎），每轮要求真实启动证据（引擎 socket 可
+连接、引擎进程是所启动 App 的子进程且命令行指向该 bundle、引擎启动日志
+出现在数据目录）→ 停止 App 与引擎 → 再次快照与严格验签。**任何** bundle
+内容变化（新增字节码会单独点名）、任一次验签失败或启动证据缺失都必须
+失败——bundle 完好不能替代启动证据。
+
+诚实约束（检查永远不得用来掩盖缺陷）：不向子进程注入禁写变量，反而
+刻意给 App 对抗值 `PYTHONDONTWRITEBYTECODE=0`（在内置 CPython 3.12 下
+该值仍启用字节码写入，只有 `makeChild` 自己的强制能守住封条）；不直接
+调用 Python 跑引擎（只启动 App 可执行文件这条生产路径）；不重新签名；
+剥离 `ORX_ANALYTICS_ENGINE_PYTHON` 等开发重定向变量，保证检查的永远是
+包内运行时；运行数据与日志全部写在 App 外（数据目录默认
+`<evidence-dir>/runtime-data`，可用 `--data-dir` 另指）。
 
 ## 升级（保留数据）
 

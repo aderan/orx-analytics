@@ -85,7 +85,8 @@ public final class HistoryModel: ObservableObject {
         return results.runs.map { HistoryRunRow.build($0, sortKey: sortKey) }
     }
 
-    /// "第 1–50 条 · 共 137 条" style window description.
+    /// "第 1–50 条 · 共 137 条" style window description. Counts render
+    /// through the unified grouping formatter (G012).
     public var rangeText: String {
         guard let page = results?.page else { return "未查询" }
         if page.totalMatched == 0 {
@@ -93,7 +94,7 @@ public final class HistoryModel: ObservableObject {
         }
         let first = page.offset + 1
         let last = page.offset + page.returned
-        return "第 \(first)–\(last) 条 · 共 \(page.totalMatched) 条"
+        return "第 \(MetricsFormat.countText(first))–\(MetricsFormat.countText(last)) 条 · 共 \(MetricsFormat.countText(page.totalMatched)) 条"
     }
 
     public var canPreviousPage: Bool { currentOffset > 0 }

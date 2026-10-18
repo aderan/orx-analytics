@@ -464,20 +464,140 @@ public struct SessionGroupRef: Codable, Equatable {
 public struct ControllerAttribution: Codable, Equatable {
     public let attributed: Bool?
     public let runs: [String]?
+    public let reason: String?
     public let basis: String?
+
+    enum CodingKeys: String, CodingKey {
+        case attributed, runs, reason, basis
+    }
 }
 
+/// One child-session anchor behind a controller attribution: the linked
+/// subagent session, the attempt it carried, and the authority (stored
+/// session_ref / ORX v11 nonce) that tied them.
+public struct ControllerChildEvidence: Codable, Equatable {
+    public let sessionID: String?
+    public let attemptID: Int?
+    public let role: String?
+    public let authority: String?
+    public let confidence: String?
+    public let nonce: String?
+
+    enum CodingKeys: String, CodingKey {
+        case role, authority, confidence, nonce
+        case sessionID = "session_id"
+        case attemptID = "attempt_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try c.decodeIfPresent(String.self, forKey: .sessionID)
+        attemptID = WireSupport.flexInt(c, .attemptID)
+        role = try c.decodeIfPresent(String.self, forKey: .role)
+        authority = try c.decodeIfPresent(String.self, forKey: .authority)
+        confidence = try c.decodeIfPresent(String.self, forKey: .confidence)
+        nonce = try c.decodeIfPresent(String.self, forKey: .nonce)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(sessionID, forKey: .sessionID)
+        try c.encodeIfPresent(attemptID, forKey: .attemptID)
+        try c.encodeIfPresent(role, forKey: .role)
+        try c.encodeIfPresent(authority, forKey: .authority)
+        try c.encodeIfPresent(confidence, forKey: .confidence)
+        try c.encodeIfPresent(nonce, forKey: .nonce)
+    }
+}
+
+/// The controller's OWN usage in the zcode `model_usage` request caliber
+/// (`usage_readmodel.request_totals`): one request is
+/// (session_id, logical_request_id, attempt_index) and is counted exactly
+/// once; `cacheRead` is a SUBSET of input, so `processedTokens` is
+/// input + output and never adds cache on top; `turn_usage` is a different
+/// caliber and never appears here. Unknown fields stay nil — an error row
+/// with explicit zeros is flagged via `errorRowsZeroTokens`, never a free
+/// or hidden request.
+public struct RequestUsage: Codable, Equatable {
+    public let caliber: String?
+    public let source: String?
+    public let requests: Int?
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let reasoningTokens: Int?
+    public let cacheRead: Int?
+    public let cacheCreation: Int?
+    public let providerTotal: Int?
+    public let computedTotal: Int?
+    public let processedTokens: Int?
+    public let processedRule: String?
+    public let statusCounts: [String: Int]?
+    public let settlingRequestRows: Int?
+    public let errorRowsZeroTokens: Int?
+    public let missingFields: [String: Int]?
+    public let rowsMissingProcessed: Int?
+    public let lastActivityMS: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case caliber, source, requests
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case reasoningTokens = "reasoning_tokens"
+        case cacheRead = "cache_read"
+        case cacheCreation = "cache_creation"
+        case providerTotal = "provider_total"
+        case computedTotal = "computed_total"
+        case processedTokens = "processed_tokens"
+        case processedRule = "processed_rule"
+        case statusCounts = "status_counts"
+        case settlingRequestRows = "settling_request_rows"
+        case errorRowsZeroTokens = "error_rows_zero_tokens"
+        case missingFields = "missing_fields"
+        case rowsMissingProcessed = "rows_missing_processed"
+        case lastActivityMS = "last_activity_ms"
+    }
+}
+
+/// A controller (host) session: the root ancestor of the run's linked
+/// subagent sessions, carrying its OWN request-caliber usage only —
+/// worker/verifier descendants belong to their attempts' books.
 public struct ControllerSession: Codable, Equatable, Identifiable {
     public let sessionID: String?
-    public let ownUsage: TurnTotals?
+    public let directory: String?
+    public let directoryMatchesProject: Bool?
+    public let createdMS: Int?
+    public let updatedMS: Int?
+    public let ownUsage: RequestUsage?
     public let runAttribution: ControllerAttribution?
 
     public var id: String { sessionID ?? "?" }
 
     enum CodingKeys: String, CodingKey {
+        case directory
         case sessionID = "session_id"
+        case directoryMatchesProject = "directory_matches_project"
+        case createdMS = "created_ms"
+        case updatedMS = "updated_ms"
         case ownUsage = "own_usage"
         case runAttribution = "run_attribution"
+    }
+}
+
+/// The per-run verdict for the controller preview: which controller
+/// session(s) this run can claim on unique evidence, or the honest reason
+/// it cannot (`host_session_unbound`, shared across runs, source not
+/// imported, ...). Carries ids and reasons only — never token numbers.
+public struct ControllerForRun: Codable, Equatable {
+    public let runID: String?
+    public let status: String?
+    public let sessionIDs: [String]?
+    public let reason: String?
+    public let note: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status, reason, note
+        case runID = "run_id"
+        case sessionIDs = "session_ids"
     }
 }
 
@@ -497,6 +617,7 @@ public struct NativePreview: Codable, Equatable {
     public let sharedSessionTrees: [SessionGroupRef]?
     public let subtreeConflicts: [SessionGroupRef]?
     public let controllerSessions: [ControllerSession]?
+    public let controllerForRun: ControllerForRun?
     public let neverSumWith: String?
     public let note: String?
 
@@ -510,6 +631,7 @@ public struct NativePreview: Codable, Equatable {
         case sharedSessionTrees = "shared_session_trees"
         case subtreeConflicts = "subtree_conflicts"
         case controllerSessions = "controller_sessions"
+        case controllerForRun = "controller_for_run"
         case neverSumWith = "never_sum_with"
     }
 }

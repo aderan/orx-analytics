@@ -68,3 +68,26 @@ worker 传递；CLI 路径由适配器从工具输出捕获）。这是唯一可
 `T003` 在 rev1 与 rev3 是两个任务行；跨 revision 的对比只通过
 `replan_*` 声明边（v9）进行，没有声明边就保持"未知"，不得用编号相似度
 推断重复或浪费。
+
+## controller 会话的发现与归属（G012 T005 冻结，2026-10-17）
+
+controller（宿主）会话不是靠猜出来的——它必须是**锚定的子会话的根祖先**：
+
+- 候选 = 本项目已关联（stored `session_ref` / ORX v11 nonce 推断 high）
+  的子会话沿 `session.parent_id` 链向上走到根（任意层级深度；链条断或
+  成环即无根，不推断）。自身已关联 attempt 的根会话是 attempt 账本，
+  永不算 controller（嵌套 attempt 情形）。
+- **目录只记录，不过滤**：`directory_matches_project` 记录符号链接两侧
+  解析后是否与项目根一致；子代理继承 controller 窗口的目录，可以是别的
+  项目（G010：从 A 窗口控制 B 项目时 18 个 nonce 命中全记在 A 目录下）。
+  绝不按目录、标题、最近活动或宽泛时间窗猜测归属。
+- **归属唯一证据**：该根祖先全部子会话所锚定的 attempt 同属一个 run 且
+  run 均已知。跨多个 run、或任一子 attempt run 未知 → 未归属，给出原因
+  （`usage_readmodel.native_session_preview` 的 `controller_for_run`）：
+  `unattributed`（跨 run 共享）/ `host_session_unbound`（run 的 zcode
+  attempt 均无会话绑定，沿用 ORX 缺量原因词汇）/ `session_not_imported`
+  （session_ref 在、zcode 镜像无此会话）/ `no_controller_session` /
+  `no_zcode_attempts`。未归属绝不摊分、绝不补零。
+- 用量与关联依据同源发布：controller 自身用量为 `model_usage` 请求口径
+  （见 metrics.md），`child_evidence` 逐条列出锚（子会话、attempt、
+  authority/confidence、nonce），供复核；ORX 已记录口径不受任何影响。

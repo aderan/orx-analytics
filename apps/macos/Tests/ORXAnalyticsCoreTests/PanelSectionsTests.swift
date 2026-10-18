@@ -153,6 +153,116 @@ final class PanelSectionsTests: XCTestCase {
                        "blocked_run")
     }
 
+    // MARK: G012 control-state presentation (用户反馈 3)
+
+    /// 终态 done 降为普通文字（无徽标强调），非终态徽标保留；呈现样式
+    /// 的降级不改写任何执行事实——Goal 控制状态与 Run 执行状态仍然分立。
+    func testDoneControlRendersAsPlainTextNonTerminalStatesKeepBadge() throws {
+        let panel = PanelModel.build(try controlPresentationFixture())
+        let cards = (panel.active + panel.recentCompleted)
+            .map { ($0.run.runID, $0) }
+        let byRun = Dictionary(uniqueKeysWithValues: cards)
+
+        // 终态 done：文字仍可见（不丢维度），但不再作为橙色徽标
+        let done = byRun["R200"]!
+        XCTAssertEqual(done.controlStatus?.raw, "done")
+        XCTAssertEqual(done.controlPlainText, "目标 已完成")
+        XCTAssertNil(done.controlBadgeText,
+                     "终态 done 不再用徽标强调（用户反馈 3）")
+
+        // 非终态徽标原样保留：已暂停 / 取消中 / 已取消
+        XCTAssertEqual(byRun["R201"]!.controlBadgeText, "目标 已暂停")
+        XCTAssertNil(byRun["R201"]!.controlPlainText)
+        XCTAssertEqual(byRun["R202"]!.controlBadgeText, "目标 取消中")
+        XCTAssertEqual(byRun["R203"]!.controlBadgeText, "目标 已取消")
+        XCTAssertNil(byRun["R203"]!.controlPlainText)
+
+        // 普通 active 控制层与未知/缺省控制层：不徽标、不普通文字、不猜
+        XCTAssertNil(byRun["R204"]!.controlBadgeText)
+        XCTAssertNil(byRun["R204"]!.controlPlainText)
+        XCTAssertNil(byRun["R205"]!.controlBadgeText)   // 控制层缺省
+        XCTAssertNil(byRun["R205"]!.controlPlainText)
+        XCTAssertNil(byRun["R206"]!.controlBadgeText)   // 控制层未知
+        XCTAssertNil(byRun["R206"]!.controlPlainText)
+        XCTAssertEqual(byRun["R206"]!.controlStatus?.known, false)
+
+        // 呈现降级不改写执行事实：done 卡片执行状态仍是完成，
+        // 已暂停卡片执行状态仍是执行中（两个维度同时可见）
+        XCTAssertEqual(done.run.status.display, "完成")
+        XCTAssertEqual(byRun["R201"]!.run.status.display, "执行中")
+    }
+
+    /// 同一卡片上两个维度的可见性矩阵完整（G011 分层 + G012 降级）：
+    /// 每个控制状态要么走徽标、要么走普通文字、要么静默，互斥且完备。
+    func testControlPresentationIsMutuallyExclusiveAcrossStates() throws {
+        let panel = PanelModel.build(try controlPresentationFixture())
+        let byRun = Dictionary(uniqueKeysWithValues:
+            (panel.active + panel.recentCompleted).map { ($0.run.runID, $0) })
+        for (runID, card) in byRun {
+            let badge = card.controlBadgeText != nil
+            let plain = card.controlPlainText != nil
+            XCTAssertFalse(badge && plain,
+                           "\(runID) 不得同时呈现徽标与普通文字")
+        }
+        // 状态行的控制层汇总不受卡片样式降级影响（done 仍计数）
+        XCTAssertEqual(panel.recentCompleted.filter { $0.controlStatus?.raw == "done" }
+            .map(\.run.runID), ["R200"])
+    }
+
+    private func controlPresentationFixture() throws -> OverviewEnvelope {
+        let json = """
+        {"op": "overview", "ok": true, "protocol_version": 1,
+         "generated_at": "2026-10-17T10:00:00+00:00",
+         "summary": {"active_runs": 3, "attention": 0, "recent_completed": 4},
+         "active": [
+           {"project": "/tmp/projP", "run_id": "R201",
+            "goal": {"id": "G201", "objective": "已暂停目标",
+                     "status": {"raw": "paused", "known": true, "display": "已暂停"}},
+            "status": {"raw": "running", "known": true, "display": "执行中"},
+            "started_at": "2026-10-17T09:00:00+00:00"},
+           {"project": "/tmp/projP", "run_id": "R202",
+            "goal": {"id": "G202", "objective": "取消中目标",
+                     "status": {"raw": "cancelling", "known": true, "display": "取消中"}},
+            "status": {"raw": "running", "known": true, "display": "执行中"},
+            "started_at": "2026-10-17T09:10:00+00:00"},
+           {"project": "/tmp/projP", "run_id": "R204",
+            "goal": {"id": "G204", "objective": "普通进行目标",
+                     "status": {"raw": "active", "known": true, "display": "进行中"}},
+            "status": {"raw": "running", "known": true, "display": "执行中"},
+            "started_at": "2026-10-17T09:20:00+00:00"}],
+         "attention": [],
+         "recent_completed": [
+           {"project": "/tmp/projP", "run_id": "R200",
+            "goal": {"id": "G200", "objective": "已完成目标",
+                     "status": {"raw": "done", "known": true, "display": "已完成"}},
+            "status": {"raw": "done", "known": true, "display": "完成"},
+            "started_at": "2026-10-16T08:00:00+00:00",
+            "completed_at": "2026-10-16T09:00:00+00:00"},
+           {"project": "/tmp/projP", "run_id": "R203",
+            "goal": {"id": "G203", "objective": "已取消目标",
+                     "status": {"raw": "cancelled", "known": true, "display": "已取消"}},
+            "status": {"raw": "done", "known": true, "display": "完成"},
+            "started_at": "2026-10-16T08:00:00+00:00",
+            "completed_at": "2026-10-16T09:30:00+00:00"},
+           {"project": "/tmp/projP", "run_id": "R205",
+            "status": {"raw": "done", "known": true, "display": "完成"},
+            "started_at": "2026-10-15T08:00:00+00:00",
+            "completed_at": "2026-10-15T09:00:00+00:00"},
+           {"project": "/tmp/projP", "run_id": "R206",
+            "goal": {"id": "G206", "objective": "未知控制目标",
+                     "status": {"raw": null, "known": false, "display": "未知状态"}},
+            "status": {"raw": "done", "known": true, "display": "完成"},
+            "started_at": "2026-10-15T10:00:00+00:00",
+            "completed_at": "2026-10-15T11:00:00+00:00"}],
+         "project_health": [], "snapshots": {}, "coverage": {}, "warnings": []}
+        """
+        do {
+            return try JSONDecoder().decode(OverviewEnvelope.self, from: Data(json.utf8))
+        } catch {
+            fatalError("control presentation fixture decode failed: \(error)")
+        }
+    }
+
     private func lifecycleFixture() throws -> OverviewEnvelope {
         let json = """
         {"op": "overview", "ok": true, "protocol_version": 1,

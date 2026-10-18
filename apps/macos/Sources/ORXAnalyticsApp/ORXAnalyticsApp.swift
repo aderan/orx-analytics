@@ -74,9 +74,10 @@ struct ORXAnalyticsApp: App {
                 Image(systemName: model.attentionCount > 0
                       ? "exclamationmark.octagon.fill"
                       : "circle.grid.2x2")
-                // The number is ALWAYS the in-progress Run count (§3).
+                // The number is ALWAYS the in-progress Run count (§3),
+                // rendered through the unified grouping formatter (G012).
                 if model.activeRunCount > 0 {
-                    Text("\(model.activeRunCount)")
+                    Text(MetricsFormat.countText(model.activeRunCount))
                 }
             }
             // The menu-bar label lives as long as the app does, so it
@@ -120,7 +121,10 @@ private struct OpenWindowDonation: View {
             .frame(width: 0, height: 0)
             .onAppear {
                 RuntimeCoordinator.shared.windowActions.openRunDetail = {
-                    openWindow(id: "run-detail")
+                    // Notification deep links reuse the SAME fronting
+                    // routing as panel card clicks (G012 用户反馈 2):
+                    // activate + open/reuse + make key and front.
+                    DetailWindowRouting.openRunDetailFrontmost(openWindow)
                 }
             }
     }

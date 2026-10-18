@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-STORE_VERSION = "3"
+STORE_VERSION = "4"
 
 _RECEIPTS_TABLE = """
 CREATE TABLE IF NOT EXISTS orx_receipts(
@@ -30,13 +30,27 @@ CREATE TABLE IF NOT EXISTS orx_receipts(
 );
 """
 
+# store v4: the zcode model_usage mirror (zc_requests) gains the per-request
+# token columns the controller preview reads (G012 用户反馈 5). Additive only;
+# the natural primary key (session_id, logical_request_id, attempt_index) is
+# unchanged, so re-importing the same source rows upserts and never double
+# counts.
+_REQUEST_TOKEN_COLUMNS = (
+    "input_tokens", "output_tokens", "reasoning_tokens",
+    "cache_read", "cache_creation", "provider_total", "computed_total",
+)
+
 
 def _migrate_store(conn: sqlite3.Connection, from_version: str) -> None:
     """In-place additive upgrades of the analytics store itself. v1 -> v2:
     orx_attempts gains the ORX v11 `nonce` column (identity anchors).
     v2 -> v3: adds the `orx_receipts` mirror table (ORX v15 completion
     receipts). SCHEMA already creates it idempotently on open; the branch
-    keeps the explicit step so a migrated store is provably complete."""
+    keeps the explicit step so a migrated store is provably complete.
+    v3 -> v4: zc_requests gains the model_usage token columns; the zcode
+    model_usage rowid cursor is reset so the next import re-reads already
+    mirrored rows and backfills the new fields (upserts by natural key —
+    repeated collection still never double counts)."""
     v = int(from_version)
     if v < 2:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(orx_attempts)")}
@@ -44,6 +58,19 @@ def _migrate_store(conn: sqlite3.Connection, from_version: str) -> None:
             conn.execute("ALTER TABLE orx_attempts ADD COLUMN nonce TEXT")
     if v < 3:
         conn.executescript(_RECEIPTS_TABLE)
+    if v < 4:
+        cols = {r["name"] for r in conn.execute(
+            "PRAGMA table_info(zc_requests)")}
+        for name in _REQUEST_TOKEN_COLUMNS:
+            if cols and name not in cols:
+                conn.execute(
+                    f"ALTER TABLE zc_requests ADD COLUMN {name} INTEGER")
+        # Backfill contract: rows already mirrored under v3 were read before
+        # the token columns existed. Resetting the incremental cursor makes
+        # the next import re-scan them; the natural-key upsert refreshes the
+        # new fields in place and counts zero new inserts.
+        conn.execute(
+            "DELETE FROM import_state WHERE key='model_usage_rowid'")
     conn.execute(
         "UPDATE meta SET value=? WHERE key='store_version'", (STORE_VERSION,))
     conn.commit()
@@ -88,6 +115,9 @@ CREATE TABLE IF NOT EXISTS zc_requests(
   session_id TEXT NOT NULL, logical_request_id TEXT NOT NULL,
   attempt_index INTEGER NOT NULL, turn_id TEXT, provider_id TEXT,
   model_id TEXT, status TEXT, started_ms INTEGER, completed_ms INTEGER,
+  input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+  cache_read INTEGER, cache_creation INTEGER, provider_total INTEGER,
+  computed_total INTEGER,
   PRIMARY KEY(session_id, logical_request_id, attempt_index)
 );
 CREATE TABLE IF NOT EXISTS zc_tools(
@@ -267,7 +297,7 @@ def now_iso() -> str:
 
 
 # store versions this code can upgrade in place; anything else refuses
-_MIGRATABLE_FROM = {"1", "2"}
+_MIGRATABLE_FROM = {"1", "2", "3"}
 
 
 class Store:

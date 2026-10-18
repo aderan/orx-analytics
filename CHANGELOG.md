@@ -1,5 +1,47 @@
 # 版本记录
 
+## 0.4.3 — 2026-10-17
+
+- 按用户实测反馈修复快速面板体验（G012，五项）：
+  1. **token 千位分隔**：App 内 token 与计数展示统一固定三位逗号分组
+     （`1,234,567`），不随系统 locale 变化（`de_DE`/`hi_IN` 等无法重排）；
+     审计收口全部绕过格式器的计数插值点；仅影响显示，不改存储值、标识
+     或求和口径，未知 "—"/显式 0/两口径并列规则不变。
+  2. **点击项目卡片窗口前置**：面板卡片、底部“查看全部执行”与通知深链
+     打开执行详情时激活应用并把 run-detail 单一窗口前置取键
+     （activate → openWindow → makeKeyAndOrderFront），不新增重复窗口；
+     连续点击不同项目时选中跟随最后一次点击。
+  3. **目标已完成降为普通文字**：终态 `done` 在面板卡片头显示普通文字
+     「目标 已完成」（caption2+secondary），不再用橙色控制徽标强调；
+     非终态 `已暂停/取消中/已取消` 徽标保留，控制/执行双维度分层不回退。
+  4. **降低数据刷新频率**：面板/详情默认刷新 5s → 30s（设置项保留
+     5/10/15/30/60，显式选择过的既有偏好保留；缺省值迁移含
+     `panel.refresh.interval.chosen` 标记），引擎分级 5/15/60 → 30/60/300
+     秒，需求租约与 CLI 续约同步对齐（漏一整轮不降级），派生 lane
+     随 tier 自动缩放；打开面板的重复立即刷新与多窗口重复采集一并消除
+     （详情窗口加载为纯读查询）。
+  5. **controller token 归属补齐**：ORX usage 只记 worker/verifier
+     attempt，controller 宿主会话（zcode 主会话）token 缺失。补齐为
+     只读镜像 zcode `model_usage` 逐请求 token（store v4：`zc_requests`
+     增列＋采集游标重置幂等补齐，重复采集不重复计数；缺列旧库镜像
+     NULL 并列名，不补零），controller 会话按子会话关联树根祖先发现，
+     `own_usage` 只计自身请求（后代属各自 attempt 账），唯一归属证据
+     才归到 run；跨 run 共享等情形如实给出不可归属原因并显示带强制
+     标注的会话累计，绝不按 run 摊分。详情页 Swift 原生显示（token、
+     来源、更新时间、归属依据）。
+- **运行时封条修复**（v0.4.2 发布说明已披露缺陷的落地）：安装后首次
+  拉起内置引擎曾向已签名 `.app` 内写入 73 个 `__pycache__` pyc 使
+  `codesign --verify` 由 0 变 1。`EngineProcessManager.makeChild` 现强制
+  `PYTHONDONTWRITEBYTECODE=1`（覆盖继承环境的任何冲突值），安装后
+  首启/重启不再向包内写任何字节码；顺带修复全新安装时
+  `<dataDir>/logs/engine-launch.log` 因文件不存在而从未落盘的潜伏缺陷。
+  新增可重复的安装后封条检查 `scripts/check_runtime_seal.py`（两轮真实
+  启动：首启＋重启，前后 bundle 快照逐字节比对＋签名校验）。
+- 版本与文档对齐：兼容组合 ORX v0.4.0 + orx-analytics v0.4.3（ORX
+  schema v15、store v4），README/安装/兼容/指标/关联/应用文档同步；
+  历史标签与历史测量报告保持原样。ORX 产品输入固定为已发布 v0.4.0，
+  本版仅 Analytics 单独发布（内部预览渠道，ad-hoc）。
+
 ## 0.4.2 — 2026-10-17
 
 - 接受 ORX schema v13/v14/v15（G010 Goal 生命周期管理，2026-10-16 的

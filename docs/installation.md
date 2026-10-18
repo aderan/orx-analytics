@@ -8,7 +8,7 @@ macOS 菜单栏应用（自带内置 Python 运行时的可安装 `ORX Analytics
 的安装、升级、回退与卸载是独立流程，见
 [app-installation.md](app-installation.md)。
 
-当前包版本为 0.4.2，分发来源是本 GitHub 仓库。以下 `@main` 指主分支
+当前包版本为 0.4.3，分发来源是本 GitHub 仓库。以下 `@main` 指主分支
 最新提交；需要可复现安装时用完整 commit SHA 替换 `main`。尚未发布到
 PyPI，不使用裸 `pip install orx-analytics` 作为本项目的安装方式。
 
@@ -107,7 +107,7 @@ uv tool install --python 3.12 .
 
 维护者可以用 `python -m build` 生成源码包与 wheel。拿到构建好的 wheel
 后，在目标虚拟环境中用 `python -m pip install --no-index --no-deps
-/absolute/path/to/orx_analytics-0.4.2-py3-none-any.whl` 离线安装。构建工具与
+/absolute/path/to/orx_analytics-0.4.3-py3-none-any.whl` 离线安装。构建工具与
 源码包不是运行时依赖。项目的 `scripts/check_install.py` 会验证这个流程。
 
 ## 数据、配置和卸载后的保留
@@ -122,9 +122,11 @@ uv tool install --python 3.12 .
 
 路径参数使用绝对路径；全局 `--data-dir` 放在子命令之前。
 升级会保留分析数据，首次打开可能迁移 analytics 自己的存储：当前
-store 版本为 3，v1/v2 的 `analytics.db` 会被原地进行增量迁移
+store 版本为 4，v1/v2/v3 的 `analytics.db` 会被原地进行增量迁移
 （v1→v2 增补 `attempts.nonce` 镜像列，v2→v3 增补 `orx_receipts`
-回执镜像表；既有行原样保留、不回填）；大于 3 的未知未来版本被
+回执镜像表，v3→v4 为 `zc_requests` 增列镜像 zcode `model_usage` 的
+逐请求 token 并重置 zcode 采集游标以幂等补齐——重复采集不重复计数；
+既有行原样保留、不回填）；大于 4 的未知未来版本被
 拒绝，不猜测、不降级。迁移只发生在 analytics 自己的数据目录里，
 它从不迁移 ORX 或 agent 源库。需要回退时，升级前停止 watcher 并
 备份整个分析数据目录；旧工具未必能读取新版本分析库，回退应恢复

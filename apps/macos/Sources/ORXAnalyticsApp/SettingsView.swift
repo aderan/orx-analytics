@@ -147,17 +147,17 @@ struct SettingsView: View {
 
     private var refreshSection: some View {
         Section {
-            Picker("面板打开时自动刷新间隔", selection: refreshBinding) {
-                Text("5 秒（默认）").tag(TimeInterval(5))
+            Picker("面板/详情打开时自动刷新间隔", selection: refreshBinding) {
+                Text("5 秒").tag(TimeInterval(5))
                 Text("10 秒").tag(TimeInterval(10))
                 Text("15 秒").tag(TimeInterval(15))
-                Text("30 秒").tag(TimeInterval(30))
+                Text("30 秒（默认）").tag(TimeInterval(30))
                 Text("60 秒").tag(TimeInterval(60))
             }
         } header: {
             Text("刷新偏好")
         } footer: {
-            Text("面板或详情打开时的状态刷新节奏。这只是状态检查频率，不代表 token 每 5 秒就有新数据。")
+            Text("面板或详情打开时的状态刷新节奏，默认 30 秒（详情窗口与面板共用同一偏好）。这只是状态检查频率，不代表 token 每隔该时间就有新数据；手动刷新随时立即生效。")
                 .font(.caption)
         }
     }

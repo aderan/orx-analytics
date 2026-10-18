@@ -86,7 +86,7 @@ struct DiagnosticsView: View {
             Text("引擎").font(.headline)
             LabeledContent("连接状态") { Text(connectionText) }
             LabeledContent("连续刷新失败") {
-                Text("\(model.diagnostics.consecutiveFailures) 次（达到 \(DiagnosticsState.failureThreshold) 次显示此诊断入口）")
+                Text("\(MetricsFormat.countText(model.diagnostics.consecutiveFailures)) 次（达到 \(MetricsFormat.countText(DiagnosticsState.failureThreshold)) 次显示此诊断入口）")
             }
             if let failure = model.diagnostics.lastFailureText {
                 LabeledContent("最近失败原因") {
@@ -152,13 +152,13 @@ struct DiagnosticsView: View {
             if envelope == nil {
                 Text("尚无成功采集的来源状态。").font(.caption).foregroundStyle(.secondary)
             } else if unhealthy.isEmpty {
-                Text("没有失败来源。\(healthy) 个来源数据健康正常。")
+                Text("没有失败来源。\(MetricsFormat.countText(healthy)) 个来源数据健康正常。")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 ForEach(unhealthy) { row in
                     sourceRow(row)
                 }
-                Text("其余 \(healthy) 个来源正常——单源失败不影响其他来源的展示。")
+                Text("其余 \(MetricsFormat.countText(healthy)) 个来源正常——单源失败不影响其他来源的展示。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

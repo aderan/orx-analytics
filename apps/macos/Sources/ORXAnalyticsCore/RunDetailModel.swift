@@ -151,12 +151,15 @@ public final class RunDetailModel: ObservableObject {
         }
     }
 
-    // MARK: - auto refresh (detail-open tier, design §8: ~5s)
+    // MARK: - auto refresh (detail-open; cadence provided by the caller)
 
-    /// While the detail window is open the app re-reads the read model
-    /// about every 5 seconds — a STATUS cadence, not a promise that
-    /// token numbers move every 5 seconds.
-    public func startAutoRefresh(interval: TimeInterval = 5) {
+    /// While the detail window is open the app re-reads the read model on
+    /// the cadence the caller provides — the app's SHARED refresh
+    /// preference (default 30s, G012 用户反馈 4). There is deliberately NO
+    /// detail-side default: the detail window never runs its own faster
+    /// hardcoded loop, and its loads are pure reads (no `refresh.request`),
+    /// so panel + detail open together never duplicate collection.
+    public func startAutoRefresh(interval: TimeInterval) {
         stopAutoRefresh()
         autoRefreshTask = Task { [weak self] in
             while !Task.isCancelled {

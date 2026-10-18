@@ -45,11 +45,11 @@ orx-analytics --version
 orx-analytics --help
 ```
 
-当前包版本 **0.4.2**。`@main` 安装主分支当时的提交；需要复现时固定到
+当前包版本 **0.4.3**。`@main` 安装主分支当时的提交；需要复现时固定到
 完整 commit SHA。当前安装来源是 GitHub，不依赖同名 PyPI 包。
-**经验证的兼容组合：ORX v0.4.0 + orx-analytics v0.4.2**——ORX 软件
-版本（0.4.0）、ORX 数据 schema（v15）与本工具软件版本（0.4.2）、
-analytics 存储 schema（store v3）是四条独立演进的版本轴，不必同号；
+**经验证的兼容组合：ORX v0.4.0 + orx-analytics v0.4.3**——ORX 软件
+版本（0.4.0）、ORX 数据 schema（v15）与本工具软件版本（0.4.3）、
+analytics 存储 schema（store v4）是四条独立演进的版本轴，不必同号；
 本工具只读接受 ORX schema 8–15，拒绝未知未来版本（见
 [兼容性与来源限制](docs/compatibility.md)）。
 pipx、普通 Python 虚拟环境、PATH、升级和卸载见[完整安装指南](docs/installation.md)。

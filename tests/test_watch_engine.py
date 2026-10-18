@@ -365,6 +365,22 @@ def test_holder_gives_up_when_engine_stays_lost(home):
     assert not watch._demand_pid_path(home).exists()
 
 
+def test_holder_renewal_paces_background_jobs_to_the_new_cadence():
+    """G012：CLI 持有进程的续约节奏与新引擎节律一致（不放大采集频率）.
+
+    Each holder renewal is one ``refresh.request`` that BOTH renews the
+    CLI's background lease and submits one coalesced refresh job (which
+    runs the state lane when claimed). The renewal cadence therefore must
+    not outpace the engine's active tier, and it must renew well inside
+    the (now longer) background lease so ordinary jitter never lets the
+    demand lapse."""
+    assert watch.HOLDER_RENEW_SEC >= eng.TIER_INTERVALS["active"], \
+        "holder renewals must not outpace the engine's active tier"
+    assert 2 * watch.HOLDER_RENEW_SEC \
+        <= eng.DEMAND_LEASE_SECONDS["background"], \
+        "one missed renewal must never let the background demand lapse"
+
+
 # ============================ 幂等：采集/刷新/重启不重复计数 ===
 
 def _zcode_totals(home: Path) -> tuple:

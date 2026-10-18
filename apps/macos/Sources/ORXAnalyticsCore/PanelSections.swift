@@ -21,6 +21,10 @@ import Foundation
 ///   ENGINE's classification (a cancelled Goal's runs arrive in no
 ///   current list); the Goal control layer travels beside the run
 ///   status as `controlStatus` — two dimensions, never rewritten.
+/// - Control-state presentation (G012 用户反馈 3): non-terminal control
+///   states (已暂停/取消中/已取消) keep the card badge; the terminal
+///   `done` renders as plain text (`controlPlainText`) — still visible,
+///   no badge emphasis. The status-line summary counts both alike.
 public struct PanelRunCard: Equatable, Identifiable {
     public let run: OverviewRunItem
     public let attention: [AttentionItem]
@@ -36,12 +40,26 @@ public struct PanelRunCard: Equatable, Identifiable {
     /// carried no goal block (legacy payload) — never guessed.
     public var controlStatus: DisplayStatus? { run.goal?.status }
 
-    /// Compact badge text for the card header: "目标 已暂停". Nil when
-    /// the control layer is absent or plain active (nothing to
-    /// distinguish) or unknown (never guessed).
+    /// Compact badge text for the card header: "目标 已暂停". Nil when the
+    /// control layer is absent or plain active (nothing to distinguish),
+    /// unknown (never guessed), or the terminal `done` (G012 用户反馈 3:
+    /// 终态不再徽标强调，走 `controlPlainText`). Non-terminal states
+    /// (已暂停/取消中/已取消) keep the badge.
     public var controlBadgeText: String? {
         guard let control = controlStatus, control.known,
-              control.raw != "active" else { return nil }
+              control.raw != "active", control.raw != "done" else { return nil }
+        return "目标 \(control.display)"
+    }
+
+    /// Plain-text form of the TERMINAL control state (G012 用户反馈 3):
+    /// "目标 已完成" stays visible on the card but WITHOUT the badge
+    /// background or emphasis — done is the expected end state, not
+    /// something to flag. Nil for every other control state (absent /
+    /// plain active / unknown render nothing; non-terminal use the badge).
+    /// Mutually exclusive with `controlBadgeText` by construction.
+    public var controlPlainText: String? {
+        guard let control = controlStatus, control.known,
+              control.raw == "done" else { return nil }
         return "目标 \(control.display)"
     }
 }

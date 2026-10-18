@@ -120,11 +120,11 @@ public struct NotificationPolicy {
         }
         var body = lines.joined(separator: "\n")
         if fresh.count > cap {
-            body += "\n…等 \(fresh.count) 项"
+            body += "\n…等 \(MetricsFormat.countText(fresh.count)) 项"
         }
         let title = fresh.count == 1
             ? "ORX Analytics：需要关注"
-            : "ORX Analytics：\(fresh.count) 项需要关注"
+            : "ORX Analytics：\(MetricsFormat.countText(fresh.count)) 项需要关注"
         return AttentionNotification(title: title, body: body,
                                      project: fresh[0].project,
                                      runID: fresh[0].runID,

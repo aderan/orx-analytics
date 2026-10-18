@@ -7,15 +7,42 @@ import ORXAnalyticsCore
 /// survive navigating into a detail and back.
 struct RunDetailHostView: View {
     @EnvironmentObject private var model: AppModel
+    /// The hosting NSWindow, captured once SwiftUI mounts the content —
+    /// lets the host front ITS OWN window precisely (G012 用户反馈 2).
+    @State private var hostWindow: NSWindow?
 
     var body: some View {
-        if let selection = model.selectedRun {
-            RunDetailView(identity: selection, client: model.client)
-                .id(selection)
-        } else {
-            HistoryQueryView(history: model.historyModel)
+        Group {
+            if let selection = model.selectedRun {
+                RunDetailView(identity: selection, client: model.client)
+                    .id(selection)
+            } else {
+                HistoryQueryView(history: model.historyModel)
+            }
+        }
+        .background(WindowAccessor(window: $hostWindow))
+        // 首次打开（窗口出现）与每次选中项变化（连续点击不同项目 /
+        // 通知深链）都把窗口前置并取得键盘焦点；面板点击路径
+        // (DetailWindowRouting) 同样前置，两条路径互为保障。
+        .onAppear { DetailWindowRouting.focus(hostWindow) }
+        .onChange(of: model.selectedRun) { _ in
+            DetailWindowRouting.focus(hostWindow)
         }
     }
+}
+
+/// Bridges the SwiftUI view into its hosting NSWindow (nil until the
+/// window materializes; capture is async off the first layout pass).
+private struct WindowAccessor: NSViewRepresentable {
+    @Binding var window: NSWindow?
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { self.window = view.window }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 /// The run detail window: four zones (design §3/§4/§5).
@@ -69,7 +96,9 @@ struct RunDetailView: View {
         .frame(minWidth: 660, minHeight: 560)
         .onAppear {
             Task { await model.load() }
-            model.startAutoRefresh()
+            // G012: the detail window follows the app's SHARED refresh
+            // preference (default 30s) — no independent detail-side cadence.
+            model.startAutoRefresh(interval: app.settings.panelRefreshInterval)
         }
         .onDisappear { model.stopAutoRefresh() }
         // Revision 默认收起，当前计划例外：任务列表的默认内容就是
@@ -250,7 +279,7 @@ struct RunDetailView: View {
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
-                            Text("\(revision.taskCount) 任务")
+                            Text("\(MetricsFormat.countText(revision.taskCount)) 任务")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -350,6 +379,8 @@ struct RunDetailView: View {
                     .foregroundStyle(.secondary)
             }
 
+            controllerPreviewSection(envelope.nativePreview)
+
             Divider()
 
             // 角色分账（engine 归属账本：任务/planner/controller/未归属）
@@ -374,12 +405,12 @@ struct RunDetailView: View {
             keyValue("字段缺失", MetricsFormat.missingText(envelope.usage?.missingFields))
             if let accuracy = envelope.usage?.accuracy {
                 keyValue("准确度分布",
-                         "exact \(accuracy["exact"] ?? 0) · estimated \(accuracy["estimated"] ?? 0) · unknown \(accuracy["unknown"] ?? 0)")
+                         "exact \(MetricsFormat.countText(accuracy["exact"] ?? 0)) · estimated \(MetricsFormat.countText(accuracy["estimated"] ?? 0)) · unknown \(MetricsFormat.countText(accuracy["unknown"] ?? 0))")
             }
             if let normalized = envelope.usage?.normalizedProcessing {
                 keyValue("标准化处理量（v\(normalized.version)，派生指标，与原始 token 分开）",
                          MetricsFormat.tokenText(normalized.value)
-                         + (normalized.partial == true ? "（部分和，缺 \(normalized.rowsMissing ?? 0) 行）" : ""))
+                         + MetricsFormat.partialSuffix(normalized))
             }
 
             Divider()
@@ -396,7 +427,7 @@ struct RunDetailView: View {
                     HStack {
                         Text(entry.model)
                         Spacer()
-                        Text("尝试 \(entry.attempts) 次")
+                        Text("尝试 \(MetricsFormat.countText(entry.attempts)) 次")
                     }
                     .font(.callout)
                 }
@@ -412,14 +443,88 @@ struct RunDetailView: View {
         guard let preview else { return "无关联原生会话" }
         let sessions = preview.union?.sessions?.count ?? 0
         if sessions == 0 { return "无关联原生会话" }
-        var text = "会话 \(sessions) 个"
+        var text = "会话 \(MetricsFormat.countText(sessions)) 个"
         if let ms = preview.asOfSessionsMS {
-            let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
-            let f = DateFormatter()
-            f.dateFormat = "MM-dd HH:mm:ss"
-            text += " · 更新 \(f.string(from: date))"
+            text += " · 更新 \(msTimestamp(ms))"
         }
         return text
+    }
+
+    /// Epoch-ms stamp the session mirrors carry → local "MM-dd HH:mm:ss".
+    private func msTimestamp(_ ms: Int) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(ms) / 1000)
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm:ss"
+        return f.string(from: date)
+    }
+
+    // MARK: controller 会话（原生预览 · model_usage 请求口径）
+
+    /// G012 用户反馈 5：controller 自身 token。只读镜像 zcode
+    /// model_usage（请求口径，按 session/logical_request/attempt 去重，
+    /// 缓存为 input 子集，处理量 = input＋output），按唯一会话归属证据
+    /// 显示在本 run 名下；无法唯一归属时显示原因，绝不补零，绝不与
+    /// ORX 口径相加。
+    private func controllerPreviewSection(_ preview: NativePreview?) -> some View {
+        let p = ControllerUsagePresentation.build(preview: preview)
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("controller 会话（原生预览 · model_usage 请求口径，独立显示）")
+                .font(.subheadline.weight(.semibold))
+            keyValue("归属状态", p.statusText)
+            if let session = p.sessionText {
+                keyValue("controller 会话", session)
+            }
+            if let reason = p.reasonText, !reason.isEmpty {
+                Text("原因：\(reason)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(p.lines) { line in
+                HStack {
+                    Text(line.label).font(.caption)
+                    Spacer(minLength: 8)
+                    Text(line.text).font(.callout.monospacedDigit())
+                }
+            }
+            if let shared = p.sharedCaveatText {
+                Text(shared)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+            if let source = p.sourceText {
+                keyValue("来源", source)
+            }
+            if p.hasSessionUsage {
+                keyValue("更新时间", p.updatedMS.map { msTimestamp($0) } ?? "—")
+                if let last = p.usageLastActivityMS {
+                    keyValue("最近请求", msTimestamp(last))
+                }
+            }
+            if let directory = p.directoryText {
+                keyValue("会话目录", directory)
+            }
+            if let evidence = p.evidenceText {
+                Text("关联依据：\(evidence)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let caveat = p.caveatText {
+                Text("数据说明：\(caveat)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let note = p.noteText, !note.isEmpty {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text("该数字属于原生预览口径（controller 自身请求，不含 worker/verifier 后代，不叠加 turn_usage），与左侧 ORX 已记录口径不相加。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8)
+            .fill(Color.primary.opacity(0.04)))
     }
 
     private func caliberBox(title: String, subtitle: String,

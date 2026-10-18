@@ -194,7 +194,8 @@ enum SmokeRunner {
         let rules: [(String, Bool)] = [
             ("unknown token -> —", MetricsFormat.tokenText(nil) == "—"),
             ("recorded zero -> 0", MetricsFormat.tokenText(0) == "0"),
-            ("value renders ungrouped", MetricsFormat.tokenText(1200) == "1200"),
+            ("value renders with fixed 3-digit grouping", MetricsFormat.tokenText(1200) == "1,200"
+                && MetricsFormat.tokenText(1_234_567) == "1,234,567"),
             ("two calibers stay separate", UsageCalibers(
                 recordedTotal: 100, nativePreviewTotal: 40).rows.count == 2
                 && UsageCalibers(recordedTotal: 100, nativePreviewTotal: 40)

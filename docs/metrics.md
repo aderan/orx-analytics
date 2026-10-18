@@ -15,6 +15,10 @@
 4. **不计费**：无计费依据，不推算费用或订阅额度。
 5. **token 字段保持原语义**：input/output/cached/cache_write 等按来源原样
    存储与求和，不做跨工具换算，不做 `input - cached` 之类算术。
+6. **展示统一千位分隔**（G012，macOS 展示层）：token 与计数在 App 内显示
+   时按固定三位逗号分组（`1,234,567`），不随系统 locale 变化；仅影响显示，
+   不改任何存储值、标识或求和口径。实现为 `MetricsFormat`（单一入口），
+   未知 "—"/显式 0/两口径并列规则不变。
 
 ## 六读数（ORX 项目）
 
@@ -74,6 +78,17 @@ revision 并账）列出终态；`passed/terminal` 为该 revision 内比值，�
 - `logical requests vs retries`：`model_usage` 按 `logical_request_id` 去重为
   逻辑请求数；`attempt_index>0` 与状态为重试/错误的行为重试计数。token 求和
   只用 turn/step 观测，不用请求行数乘任何系数。
+- `model_usage` 请求口径镜像（G012，store v4）：`zc_requests` 增列镜像
+  `model_usage` 的 `input/output/reasoning/cache_read/cache_creation/
+  provider_total/computed_total` token 字段。一个请求的身份是
+  `(session_id, logical_request_id, attempt_index)`（镜像天然主键，重复采集
+  幂等去重）；`cache_read` 是 input 的**子集**，派生处理量 = input＋output，
+  绝不把缓存叠加到 input 之上；`turn_usage` 是另一粒度口径，永不与请求行
+  求和相加；状态为 `error` 且 token 全为零的行是**零占位**（计入请求数并
+  以 `error_rows_zero_tokens` 标记，绝不视为免费或隐藏）；状态不在终态
+  词汇表（completed/error/cancelled）的行计入 `settling_request_rows`，其
+  累计数是暂定值并如实标注；来源缺列（旧库）镜像为 NULL 并在导入计数中
+  列名，缺字段行进部分和与逐字段缺失计数，未知永不补零。
 - `tool_activity`：按会话的 tool_calls、错误数、读写分布。
 - Codex：`token_usage_record.usage` 逐响应累计（input/cached/cache_write/
   output/reasoning 原样）。
@@ -135,11 +150,43 @@ revision 并账）列出终态；`passed/terminal` 为该 revision 内比值，�
   union 对全部关联树每会话只计一次；**不同树相交**（一 attempt 的祖先是
   另一 attempt 的会话）列为 `subtree_conflicts`；同一棵树承载多 attempt
   是已知多 attempt 会话情形，列为 `shared_session_trees`，绝不逐 attempt
-  相加树总量。controller 会话（有已关联子会话且自身未关联的根会话）报
-  **自身**用量，子代理后代属于各自 attempt 的账；仅当全部子会话的
-  attempt 同属一个 run 时 `run_attribution.attributed=true`。
+  相加树总量。controller 会话（见下）报**自身**用量，子代理后代属于各自
+  attempt 的账；仅当全部子会话的 attempt 同属一个 run 时
+  `run_attribution.attributed=true`。
 - 两口径各自携带 `caliber` 标记，预览结果**顶层不出现任何 token 数**
   （只在具名会话/条目内），任何接口都不返回两口径的合并数。
+
+### controller 自身用量（G012 用户反馈 5，2026-10-17）
+
+用户反馈"controller 的 token 没有检测到"：ORX usage 只记 worker/verifier
+attempt，驱动循环的 controller 宿主会话（zcode 主会话）token 只在 zcode
+`model_usage` 里。补齐方式仍是只读镜像，不写 ORX、不新增 ORX 口径数字：
+
+- **发现**：controller 会话 = 本项目已关联子会话（stored `session_ref` 或
+  ORX v11 `ORX_ASSIGNMENT` nonce 锚）沿 `parent_id` 链的**根祖先**（任意
+  层级深度），且自身未关联任何 attempt；自身已关联的根会话是 attempt
+  账本，不是 controller。目录只作记录事实（符号链接两侧解析后比对），
+  绝不作归属依据——子代理继承 controller 窗口目录，可以是别的项目
+  （G010 语义）。
+- **用量**：`controller_sessions[].own_usage` 为 `model_usage_requests`
+  口径（`usage_readmodel.request_totals`），仅统计该会话自身的请求行
+  （worker/verifier 后代已在各自 attempt 的账里，绝不叠加），按
+  `(session_id, logical_request_id, attempt_index)` 去重，缓存为 input
+  子集，处理量 = input＋output，turn_usage 永不叠加，错误零占位显式标记。
+- **归属**：仅当其全部子会话 attempt 同属一个 run 且 run 均已知时
+  `attributed=true`；同一 controller 会话跨多个 run、或子 attempt run
+  未知时保持未归属并给出原因，绝不按 run 数或时间摊分。
+- **每 run 判定**：`native_preview.controller_for_run` 给出该 run 的结论
+  ——`attributed`（列出会话 id）/ `unattributed`（跨 run 共享等，附原因）/
+  `host_session_unbound`（该 run 的 zcode attempt 均无会话绑定，沿用 ORX
+  缺量原因词汇）/ `session_not_imported`（session_ref 存在但 zcode 镜像未
+  收录该会话）/ `no_controller_session` / `no_zcode_attempts`。判定层不
+  携带任何 token 数；展示层（Swift 详情）按统一千位分隔显示 token、来源、
+  更新时间与关联依据，未知显示"—"，绝不补零，两口径并列不相加。跨 run
+  共享（`unattributed`）时仍显示该会话**自身累计**请求量——那是会话的
+  事实而非本 run 的归属额——并强制标注"跨多个 run 共享、未归属单一 run、
+  绝不按 run 摊分"；`host_session_unbound` / `session_not_imported` 等无
+  会话可列的判定只显示原因，不显示任何数字。
 
 ### 标准化处理量 normalized_processing（版本 1）
 

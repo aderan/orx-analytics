@@ -14,18 +14,41 @@ from orxanalytics import registry
 
 def test_zcode_import_idempotent_and_readonly(world):
     d0 = file_digest(world["zcode_db"])
+    sidecars_before = sorted(p.name for p in world["zcode_db"].parent.iterdir())
     r1 = import_zcode(world["store"], world["zcode_db"])
     assert "error" not in r1, r1
     assert r1["counts"]["sessions"] == 4
     assert r1["counts"]["turns"] == 5
-    assert r1["counts"]["requests"] == 6
+    # 8 source rows, 7 distinct request identities: the duplicate record of
+    # req_w1 (same session_id + logical_request_id + attempt_index) upserts
+    # onto the same natural key and is never counted twice
+    assert r1["counts"]["requests"] == 7
     assert r1["counts"]["tools"] == 4
     assert r1["counts"]["first_parts"] == 4
+    assert "model_usage_columns_missing" not in r1["counts"]
     r2 = import_zcode(world["store"], world["zcode_db"])
     assert all(v == 0 for k, v in r2["counts"].items()
                if k != "first_parts"), r2["counts"]
     assert r2["counts"]["first_parts"] == 0
     assert file_digest(world["zcode_db"]) == d0
+    # read-only opens never leave -wal/-shm sidecars next to the source
+    sidecars_after = sorted(p.name for p in world["zcode_db"].parent.iterdir())
+    assert sidecars_after == sidecars_before
+
+
+def test_zcode_model_usage_tokens_mirrored(world):
+    import_zcode(world["store"], world["zcode_db"])
+    rows = {r["logical_request_id"] + f"#{r['attempt_index']}": r for r in
+            world["store"].conn.execute(
+                "SELECT * FROM zc_requests WHERE session_id=?",
+                (world["zcode"]["w2"],))}
+    assert rows["req_w2#0"]["status"] == "error"
+    assert rows["req_w2#0"]["input_tokens"] == 0
+    assert rows["req_w2#0"]["output_tokens"] == 0
+    ok = rows["req_w2#1"]
+    assert (ok["input_tokens"], ok["output_tokens"], ok["cache_read"]) == \
+        (6_000_000, 35_000, 5_600_000)
+    assert ok["computed_total"] == 6_035_000
 
 
 def test_zcode_new_rows_are_incremental(world):
@@ -324,12 +347,96 @@ def test_store_v2_upgrades_to_v3_adding_receipts(tmp_path):
         assert {"attempt_id", "delivery_status", "delivery_digest"} <= cols
         version = store.conn.execute(
             "SELECT value FROM meta WHERE key='store_version'").fetchone()[0]
-        assert version == "3"
+        assert version == "4"   # chain lands on the current store version
         kept = store.conn.execute(
             "SELECT COUNT(*) FROM orx_snapshots").fetchone()[0]
         assert kept == 1
     finally:
         store.close()
+    # a version this code cannot upgrade refuses
+    conn = sqlite3.connect(tmp_path / "home1" / "analytics.db")
+    conn.execute("UPDATE meta SET value='9' WHERE key='store_version'")
+    conn.commit()
+    conn.close()
+    with pytest.raises(RuntimeError, match="store_version 9"):
+        Store(tmp_path / "home1")
+
+
+def test_store_v3_upgrades_to_v4_backfilling_request_tokens(tmp_path, world):
+    """An existing v3 store (zc_requests without token columns, cursor
+    already past every row) upgrades in place; the cursor reset makes the
+    next import re-read the mirrored rows and backfill the new fields —
+    without double counting — and a foreign future version still refuses."""
+    import pytest
+    from orxanalytics.store import Store
+    old = Store(tmp_path / "home1")
+    old.close()
+    # degrade to a v3 store: drop the token columns, reset the version, and
+    # pretend a v3-era import already mirrored every model_usage row (cursor
+    # at max) WITHOUT token fields
+    import_zcode(world["store"], world["zcode_db"])
+    src = world["store"].conn.execute(
+        "SELECT session_id, logical_request_id, attempt_index, turn_id, "
+        "provider_id, model_id, status, started_ms, completed_ms "
+        "FROM zc_requests").fetchall()
+    conn = sqlite3.connect(tmp_path / "home1" / "analytics.db")
+    for name in ("input_tokens", "output_tokens", "reasoning_tokens",
+                 "cache_read", "cache_creation", "provider_total",
+                 "computed_total"):
+        conn.execute(f"ALTER TABLE zc_requests DROP COLUMN {name}")
+    conn.executemany(
+        "INSERT INTO zc_requests(session_id, logical_request_id, "
+        "attempt_index, turn_id, provider_id, model_id, status, started_ms, "
+        "completed_ms) VALUES (?,?,?,?,?,?,?,?,?)",
+        [tuple(r) for r in src])
+    conn.execute(
+        "INSERT INTO import_state VALUES ('zcode:" + str(world["zcode_db"])
+        + "','model_usage_rowid','999999')")
+    conn.execute("UPDATE meta SET value='3' WHERE key='store_version'")
+    conn.commit()
+    conn.close()
+
+    store = Store(tmp_path / "home1")
+    try:
+        cols = {r["name"] for r in store.conn.execute(
+            "PRAGMA table_info(zc_requests)")}
+        assert {"input_tokens", "output_tokens", "cache_read",
+                "computed_total"} <= cols
+        version = store.conn.execute(
+            "SELECT value FROM meta WHERE key='store_version'").fetchone()[0]
+        assert version == "4"
+        # the upgrade reset the cursor: rows survive, fields still empty
+        n_before = store.conn.execute(
+            "SELECT COUNT(*) FROM zc_requests").fetchone()[0]
+        assert n_before == len(src)
+        assert store.conn.execute(
+            "SELECT COUNT(*) FROM zc_requests WHERE input_tokens IS NULL "
+            "AND output_tokens IS NULL").fetchone()[0] == len(src)
+    finally:
+        store.close()
+
+    # the next import re-reads everything (cursor reset) and backfills the
+    # token fields; upserts mean ZERO new rows — no double counting
+    from orxanalytics.store import Store as _Store
+    back = _Store(tmp_path / "home1")
+    try:
+        r = import_zcode(back, world["zcode_db"])
+        assert r["counts"]["requests"] == 0, r["counts"]
+        n_after = back.conn.execute(
+            "SELECT COUNT(*) FROM zc_requests").fetchone()[0]
+        assert n_after == len(src)
+        row = back.conn.execute(
+            "SELECT input_tokens, output_tokens FROM zc_requests WHERE "
+            "session_id=? AND logical_request_id='req_c1'",
+            (world["zcode"]["controller"],)).fetchone()
+        assert (row["input_tokens"], row["output_tokens"]) == (1_000_000, 20_000)
+        # and a repeated collect still changes nothing
+        r2 = import_zcode(back, world["zcode_db"])
+        assert r2["counts"]["requests"] == 0
+        assert back.conn.execute(
+            "SELECT COUNT(*) FROM zc_requests").fetchone()[0] == len(src)
+    finally:
+        back.close()
     # a version this code cannot upgrade refuses
     conn = sqlite3.connect(tmp_path / "home1" / "analytics.db")
     conn.execute("UPDATE meta SET value='9' WHERE key='store_version'")
@@ -370,7 +477,7 @@ def test_store_v1_upgrades_through_v2_to_v3(tmp_path):
         assert "delivery_digest" in receipts
         version = store.conn.execute(
             "SELECT value FROM meta WHERE key='store_version'").fetchone()[0]
-        assert version == "3"
+        assert version == "4"   # chain lands on the current store version
         kept = store.conn.execute(
             "SELECT COUNT(*) FROM orx_snapshots").fetchone()[0]
         assert kept == 1

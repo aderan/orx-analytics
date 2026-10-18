@@ -21,7 +21,10 @@ def _mk_zcode(path):
             cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER);
         CREATE TABLE model_usage (logical_request_id TEXT, attempt_index INTEGER,
             session_id TEXT, turn_id TEXT, provider_id TEXT, model_id TEXT,
-            status TEXT, started_at INTEGER, completed_at INTEGER);
+            status TEXT, started_at INTEGER, completed_at INTEGER,
+            input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+            cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+            provider_total_tokens INTEGER, computed_total_tokens INTEGER);
         CREATE TABLE tool_usage (id TEXT, session_id TEXT, turn_id TEXT,
             tool_name TEXT, status TEXT, started_at INTEGER, completed_at INTEGER,
             duration_ms INTEGER, exit_code INTEGER);

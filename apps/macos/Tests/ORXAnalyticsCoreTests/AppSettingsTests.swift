@@ -4,8 +4,9 @@ import XCTest
 /// User preferences (design §8/§9): notifications OFF by default (system
 /// permission is only requested after the user opts in), no data-dir
 /// override by default (the shared analytics data-dir), panel-open
-/// refresh at ~5s. Persisted through an injectable store — tests never
-/// touch the real user defaults domain.
+/// refresh at ~30s (G012 用户反馈 4: lowered from the original 5s).
+/// Persisted through an injectable store — tests never touch the real
+/// user defaults domain.
 final class AppSettingsTests: XCTestCase {
 
     private var defaults: UserDefaults!
@@ -30,13 +31,49 @@ final class AppSettingsTests: XCTestCase {
                        "通知默认关闭 — permission is never requested unprompted")
         XCTAssertNil(settings.dataDirectoryOverride,
                      "no custom data directory until the user chooses one")
-        XCTAssertEqual(settings.panelRefreshInterval, 5,
-                       "panel-open tier defaults to ~5s (design §8)")
+        XCTAssertEqual(settings.panelRefreshInterval, 30,
+                       "panel-open tier defaults to ~30s (G012 降低默认刷新频率)")
+        XCTAssertFalse(settings.panelRefreshIntervalChosen,
+                       "the default is not an explicit user choice")
     }
 
     func testInMemoryStoreStartsAtDefaults() {
         let store = InMemoryAppSettingsStore()
         XCTAssertEqual(store.load(), AppSettings.default)
+    }
+
+    // MARK: G012 — lowered default + upgrade migration
+
+    /// 新安装和未显式选择刷新偏好的升级用户采用新默认值。0.4.2 persisted
+    /// interval 5 incidentally (any settings save wrote the then-default);
+    /// without an explicit-choice marker that value is the OLD default, not
+    /// a preference — the upgrader moves to 30.
+    func testUpgraderWithIncidentalLegacyDefaultAdoptsNewDefault() {
+        defaults.set(5.0, forKey: "panel.refresh.interval")
+        let settings = UserDefaultsAppSettingsStore(defaults: defaults).load()
+        XCTAssertEqual(settings.panelRefreshInterval, 30,
+                       "未显式选择刷新偏好的升级用户采用新默认值")
+        XCTAssertFalse(settings.panelRefreshIntervalChosen)
+    }
+
+    /// 已明确保存的有效偏好保留：a pre-marker saved value that differs
+    /// from the legacy default can only descend from a deliberate choice.
+    func testUpgraderExplicitNonDefaultChoiceIsKept() {
+        defaults.set(15.0, forKey: "panel.refresh.interval")
+        let settings = UserDefaultsAppSettingsStore(defaults: defaults).load()
+        XCTAssertEqual(settings.panelRefreshInterval, 15,
+                       "已明确保存的有效偏好保留")
+    }
+
+    /// An explicit choice of the FASTEST cadence (5s was also a picker
+    /// option, not just the old default) survives via the choice marker.
+    func testExplicitFastChoiceIsKeptViaTheMarker() {
+        defaults.set(5.0, forKey: "panel.refresh.interval")
+        defaults.set(true, forKey: "panel.refresh.interval.chosen")
+        let settings = UserDefaultsAppSettingsStore(defaults: defaults).load()
+        XCTAssertEqual(settings.panelRefreshInterval, 5,
+                       "显式选择 5 秒的用户保留 5 秒")
+        XCTAssertTrue(settings.panelRefreshIntervalChosen)
     }
 
     // MARK: roundtrip

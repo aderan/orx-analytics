@@ -18,10 +18,12 @@ collect. Guarantees implemented here:
   collection demand (``refresh.request`` reasons ``panel-open`` /
   ``detail-open`` / ``background`` renew a per-connection lease). A client
   disconnect releases exactly its own demand, never the other side's.
-- **Tiered scheduling**: UI open -> ~5s, background activity (demand or
-  observed active runs) -> ~15s, idle -> ~60s; the history audit runs at
-  a low fixed cadence or manually. State refresh, usage import and
-  anomaly analysis are separate lanes with separate cadences.
+- **Tiered scheduling**: UI open -> ~30s, background activity (demand or
+  observed active runs) -> ~60s, idle -> ~300s (G012 用户反馈 4: the
+  original 5/15/60s tiers refreshed far too often for real usage); the
+  history audit runs at a low fixed cadence or manually. State refresh,
+  usage import and anomaly analysis are separate lanes with separate
+  cadences.
 - **Coalesced, bounded refresh**: all pending ``refresh.request`` calls
   merge into ONE pending job (union of projects); each source appears at
   most once, so no source can queue unboundedly.
@@ -67,13 +69,18 @@ from .store import Store
 
 # ----------------------------------------------------------------- tuning ---
 
-TIER_INTERVALS: dict[str, float] = {"ui": 5.0, "active": 15.0, "idle": 60.0}
+TIER_INTERVALS: dict[str, float] = {"ui": 30.0, "active": 60.0,
+                                    "idle": 300.0}
 USAGE_MULTIPLIER = 4          # usage import cadence = 4x the state tier
 ANOMALY_MULTIPLIER = 2        # anomaly analysis cadence = 2x the state tier
 HISTORY_AUDIT_INTERVAL = 1800.0   # low-frequency full reconciliation
 FULL_RECHECK_INTERVAL = 600.0     # max age of a change-detected "unchanged"
 WAKE_SLACK = 30.0             # gap beyond the tier interval => treat as sleep
-DEMAND_LEASE_SECONDS = {"ui": 30.0, "background": 90.0}
+# Leases are sized against the clients' renewal cadence (the app's panel
+# loop renews per refresh round, the CLI holder per HOLDER_RENEW_SEC):
+# at least two full intervals of headroom, so one missed renewal never
+# drops the tier, while a client that truly goes away releases quickly.
+DEMAND_LEASE_SECONDS = {"ui": 180.0, "background": 360.0}
 MAX_RESTARTS = 5
 BACKOFF_BASE = 1.0
 BACKOFF_CAP = 30.0
@@ -616,7 +623,8 @@ class Engine:
     # --------------------------------------------------------- scheduling ---
 
     def tier(self, now: float | None = None) -> tuple[str, float]:
-        """(tier, interval): ui 5s < active 15s < idle 60s (design §8)."""
+        """(tier, interval): ui 30s < active 60s < idle 300s (design §8,
+        cadence lowered by G012 用户反馈 4)."""
         now = self._clock() if now is None else now
         kinds = self.demand.kinds_active(now)
         if "ui" in kinds:
