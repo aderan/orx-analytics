@@ -1,6 +1,18 @@
 # orx-analytics
 
-[![Tests and installation](https://github.com/aderan/orx-analytics/actions/workflows/ci.yml/badge.svg)](https://github.com/aderan/orx-analytics/actions/workflows/ci.yml)
+> **项目已迁至 [ORX](https://github.com/aderan/orx)。** ORX Analytics 的源码已合并到 ORX 的 [`tools/orx-analytics/`](https://github.com/aderan/orx/tree/main/tools/orx-analytics)，macOS 应用在 [`apps/macos/`](https://github.com/aderan/orx/tree/main/apps/macos)。后续开发与发布随 ORX 一起迭代，`orx-analytics` 仍可独立安装。
+>
+> 本仓保留提交、标签和截至 [v0.4.3](https://github.com/aderan/orx-analytics/releases/tag/v0.4.3) 的[历史发布与下载](https://github.com/aderan/orx-analytics/releases)，供旧版重装与回退。新问题与改进请提交到 [ORX Issues](https://github.com/aderan/orx/issues)。
+
+使用旧 Git URL 安装的用户需显式切换来源。先阅读 [CLI 安装与迁移说明](https://github.com/aderan/orx/blob/main/tools/orx-analytics/docs/installation.md)，再从 ORX 开发线安装：
+
+```sh
+uv tool install --reinstall --python 3.12 'git+https://github.com/aderan/orx.git@main#subdirectory=tools/orx-analytics'
+```
+
+macOS 应用的构建、升级与回退见 [ORX App 指引](https://github.com/aderan/orx/blob/main/tools/orx-analytics/docs/app-installation.md)。
+
+## 历史说明（v0.4.3）
 
 跨项目、跨 coding agent 的只读执行观测：ORX（zcode/Codex/Cursor 派发）
 与非 ORX 项目（zcode/Codex/Cursor 原生会话）的用量、耗时、交付质量、
@@ -10,11 +22,10 @@
 个人开发者。所有采集和分析在本地执行；安装后不需要 ORX Python 包，
 也不需要调用模型或供应商计费接口。
 
-**它是独立工具、独立仓库。** ORX 保存执行事实并控制 Goal 的推进；
+在旧版本中，ORX 保存执行事实并控制 Goal 的推进；
 orx-analytics 通过只读契约消费这些事实，同时读取原生 agent 会话。
 分析结果只生成信号和本地草案，恢复与修复由操作者或获授权的 Controller
-决定。仓库组织、被否决的合并/submodule 方案与重新评估条件见
-[架构决策 ADR-0001](docs/adr/0001-independent-repository.md)。
+决定。旧仓的独立仓库阶段见[历史架构决策](docs/adr/0001-independent-repository.md)。
 
 | 能力 | 现在提供什么 |
 |---|---|
@@ -34,19 +45,18 @@ orx-analytics 通过只读契约消费这些事实，同时读取原生 agent �
 - 无计费依据，不算费用；
 - 发现只生成本地草案，不自动发布、不自动修复。
 
-## 安装
+## 安装历史版本
 
 需要 Python **3.11+**。推荐通过 [uv](https://docs.astral.sh/uv/getting-started/installation/)
 安装到独立工具环境；Git 来源安装还需要 `git`：
 
 ```sh
-uv tool install --python 3.12 'git+https://github.com/aderan/orx-analytics.git@main'
+uv tool install --python 3.12 'git+https://github.com/aderan/orx-analytics.git@v0.4.3'
 orx-analytics --version
 orx-analytics --help
 ```
 
-当前包版本 **0.4.3**。`@main` 安装主分支当时的提交；需要复现时固定到
-完整 commit SHA。当前安装来源是 GitHub，不依赖同名 PyPI 包。
+此处的安装示例固定到旧仓最后一个发布标签 **v0.4.3**。
 **经验证的兼容组合：ORX v0.4.0 + orx-analytics v0.4.3**——ORX 软件
 版本（0.4.0）、ORX 数据 schema（v15）与本工具软件版本（0.4.3）、
 analytics 存储 schema（store v4）是四条独立演进的版本轴，不必同号；
